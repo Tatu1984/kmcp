@@ -1,0 +1,103 @@
+digraph KMCP_DataFlow {
+  rankdir=TB;
+  bgcolor="white";
+  splines=spline;
+  nodesep=0.35;
+  ranksep=0.65;
+  fontname="Helvetica";
+  node [fontname="Helvetica" fontsize=10 penwidth=1.2 margin="0.16,0.10"];
+  edge [fontname="Helvetica" fontsize=9 color="#5B6B7C" penwidth=1.1];
+
+  labelloc="t";
+  label=<<b>KMCP — Smart Street Parking Management System</b><br/><font point-size="12">Data Flow Diagram (Level 1, Phase 1 — manual plate capture)</font><br/> >;
+  fontsize=18;
+
+  /* ---- External entities (squares) ---- */
+  node [shape=box style="filled" fillcolor="#1F4E79" fontcolor="white"];
+  E_att  [label=<<b>Parking Attendant</b><br/><font point-size="8">Vendor App</font>>];
+  E_cit  [label=<<b>Citizen</b><br/><font point-size="8">Citizen App</font>>];
+  E_adm  [label=<<b>Municipal Admin</b><br/><font point-size="8">Admin Portal</font>>];
+  E_pay  [label=<<b>Razorpay</b><br/><font point-size="8">Payments / Payouts</font>>];
+  E_msg  [label=<<b>SMS · WhatsApp · Email</b><br/><font point-size="8">Notification providers</font>>];
+
+  /* ---- Processes (rounded) ---- */
+  node [shape=box style="rounded,filled" fillcolor="#4A7EBB" fontcolor="white"];
+  P1 [label=<<b>1.0  Capture &amp; Start</b><br/><font point-size="8">Photo of plate + typed number<br/>GPS zone match · duplicate check</font>>];
+  P2 [label=<<b>2.0  Session Timer</b><br/><font point-size="8">Elapsed time · grace period<br/>overstay watch</font>>];
+  P3 [label=<<b>3.0  Tariff Calculation</b><br/><font point-size="8">Vehicle type · zone · slab<br/>peak/holiday · tax · pass</font>>];
+  P4 [label=<<b>4.0  Payment Collection</b><br/><font point-size="8">Cash · UPI QR · card · wallet<br/>idempotent capture</font>>];
+  P5 [label=<<b>5.0  Receipt &amp; Notify</b><br/><font point-size="8">PDF / GST invoice<br/>SMS · WhatsApp · push</font>>];
+  P6 [label=<<b>6.0  Shift Close</b><br/><font point-size="8">Cash vs digital tally<br/>deposit confirmation</font>>];
+  P7 [label=<<b>7.0  Settlement</b><br/><font point-size="8">Gross → commission →<br/>vendor share · govt share</font>>];
+  P8 [label=<<b>8.0  Reporting &amp; Audit</b><br/><font point-size="8">Revenue · occupancy · tax<br/>PDF / Excel / CSV export</font>>];
+  P9 [label=<<b>9.0  Discovery</b><br/><font point-size="8">Nearby zones · live availability<br/>navigation · vehicle locator</font>>];
+  P10[label=<<b>10.0  Offline Sync</b><br/><font point-size="8">Queued events replayed<br/>server-side conflict resolve</font>> fillcolor="#7FA6CE"];
+
+  /* ---- Data stores (open cylinders) ---- */
+  node [shape=cylinder style="filled" fillcolor="#2E7D32" fontcolor="white" fontsize=9];
+  D1 [label="D1  Parking Sessions"];
+  D2 [label="D2  Zones · Slots · Occupancy"];
+  D3 [label="D3  Tariff Rules"];
+  D4 [label="D4  Payments · Receipts"];
+  D5 [label="D5  Vendors · Attendants · Shifts"];
+  D6 [label="D6  Settlements · Ledger"];
+  D7 [label="D7  Users · Vehicles · Passes"];
+  D8 [label="D8  Audit &amp; Evidence Store"];
+
+  /* ---- Flows ---- */
+  E_att -> P1  [label="plate photo + number\nvehicle type · GPS"];
+  P1 -> D8     [label="evidence image\n+ timestamp"];
+  P1 -> D2     [label="occupancy +1"];
+  P1 -> D1     [label="session ACTIVE"];
+  P1 -> D7     [label="vehicle upsert"];
+  P1 -> P5     [label="'parking started'"];
+
+  D1 -> P2     [label="active sessions"];
+  P2 -> E_cit  [label="live elapsed time\n+ running charge"];
+  P2 -> P5     [label="overstay alert"];
+
+  E_att -> P3  [label="end parking"];
+  D1 -> P3     [label="start / end time"];
+  D3 -> P3     [label="applicable slab"];
+  D7 -> P3     [label="monthly pass / subscription"];
+  P3 -> D1     [label="payable amount"];
+  P3 -> P4     [label="amount due"];
+
+  P4 -> E_pay  [label="order create"];
+  E_pay -> P4  [label="webhook: captured / failed"];
+  E_cit -> P4  [label="in-app UPI / card"];
+  P4 -> D4     [label="payment record"];
+  P4 -> D1     [label="session COMPLETED"];
+  P4 -> D2     [label="occupancy −1"];
+  P4 -> P5     [label="receipt trigger"];
+
+  P5 -> E_msg  [label="SMS · WhatsApp · email"];
+  P5 -> E_cit  [label="push + PDF receipt"];
+  P5 -> D4     [label="receipt URL"];
+
+  E_att -> P6  [label="shift end + GPS"];
+  D4 -> P6     [label="shift collections"];
+  P6 -> D5     [label="shift closed · cash deposited"];
+
+  D4 -> P7     [label="settled transactions"];
+  D5 -> P7     [label="commission rate"];
+  P7 -> E_adm  [label="settlement approval"];
+  P7 -> E_pay  [label="payout instruction"];
+  P7 -> D6     [label="ledger entries"];
+
+  D1 -> P8; D2 -> P8; D4 -> P8; D6 -> P8; D8 -> P8;
+  P8 -> E_adm  [label="dashboards · reports\ntax · audit trail"];
+
+  D2 -> P9     [label="live slot counts"];
+  D3 -> P9     [label="published charges"];
+  P9 -> E_cit  [label="map · availability\nETA · last parked"];
+
+  E_att -> P10 [label="queued offline events"];
+  P10 -> P1    [label="replay start"];
+  P10 -> P4    [label="replay payment"];
+  P10 -> D8    [label="sync log"];
+
+  E_adm -> D3  [label="tariff config"];
+  E_adm -> D2  [label="zone / slot config"];
+  E_adm -> D5  [label="vendor KYC · assignment"];
+}

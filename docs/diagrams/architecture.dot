@@ -1,0 +1,93 @@
+digraph KMCP_Architecture {
+  rankdir=TB;
+  bgcolor="white";
+  compound=true;
+  splines=polyline;
+  nodesep=0.45;
+  ranksep=0.75;
+  fontname="Helvetica";
+  node [shape=box style="rounded,filled" fontname="Helvetica" fontsize=11 penwidth=1.2 margin="0.18,0.12"];
+  edge [fontname="Helvetica" fontsize=9 color="#5B6B7C" penwidth=1.1];
+
+  labelloc="t";
+  label=<<b>KMCP — Smart Street Parking Management System</b><br/><font point-size="12">Software Architecture (Phase 1)</font><br/> >;
+  fontsize=18;
+
+  /* ---------------- CLIENT TIER ---------------- */
+  subgraph cluster_clients {
+    label=" CLIENT TIER ";
+    fontsize=13; fontname="Helvetica-Bold";
+    style="rounded,filled"; color="#C9D9E8"; fillcolor="#F2F7FC"; penwidth=1.5;
+
+    admin  [label=<<b>Admin Portal</b><br/><font point-size="9">Next.js 16 App Router<br/>Municipal / Authority Web</font>>  fillcolor="#1F4E79" fontcolor="white"];
+    vendor [label=<<b>Vendor App</b><br/><font point-size="9">React Native (Expo)<br/>THIN — API driven</font>>            fillcolor="#2E7D32" fontcolor="white"];
+    citizen[label=<<b>Citizen App</b><br/><font point-size="9">React Native (Expo)<br/>THIN — API driven</font>>           fillcolor="#6A1B9A" fontcolor="white"];
+  }
+
+  /* ---------------- EDGE ---------------- */
+  subgraph cluster_edge {
+    label=" EDGE / TRANSPORT ";
+    fontsize=13; fontname="Helvetica-Bold";
+    style="rounded,filled"; color="#D8CBB2"; fillcolor="#FBF7EE"; penwidth=1.5;
+
+    edge_l [label=<<b>Vercel Edge + CDN</b><br/><font point-size="9">TLS 1.3 · HTTP/2 · Static assets</font>> fillcolor="#E8DFC8"];
+    mw     [label=<<b>Middleware</b><br/><font point-size="9">JWT verify · RBAC · Rate limit<br/>Device binding · Audit tap</font>> fillcolor="#E8DFC8"];
+  }
+
+  /* ---------------- APPLICATION ---------------- */
+  subgraph cluster_app {
+    label=" APPLICATION TIER  —  src/backend ";
+    fontsize=13; fontname="Helvetica-Bold";
+    style="rounded,filled"; color="#B7C9D9"; fillcolor="#EEF4FA"; penwidth=1.5;
+
+    api  [label=<<b>API Route Handlers</b><br/><font point-size="9">/api/v1/** · REST · Zod validated</font>> fillcolor="#4A7EBB" fontcolor="white"];
+    svc  [label=<<b>Service Layer</b><br/><font point-size="9">Session · Tariff · Payment · Settlement<br/>Zone · Vendor · Report · Notification</font>> fillcolor="#4A7EBB" fontcolor="white"];
+    repo [label=<<b>Repository Layer</b><br/><font point-size="9">Prisma queries · Transactions · No business logic</font>> fillcolor="#4A7EBB" fontcolor="white"];
+    jobs [label=<<b>Scheduled Jobs</b><br/><font point-size="9">Settlement runs · Overstay sweep<br/>Report builds · Pass expiry</font>> fillcolor="#7FA6CE" fontcolor="white"];
+  }
+
+  /* ---------------- DATA ---------------- */
+  subgraph cluster_data {
+    label=" DATA TIER ";
+    fontsize=13; fontname="Helvetica-Bold";
+    style="rounded,filled"; color="#B5D3B5"; fillcolor="#F0F7F0"; penwidth=1.5;
+
+    db    [label=<<b>PostgreSQL (Neon)</b><br/><font point-size="9">Prisma 7 · Serverless pooling<br/>PITR backups</font>> shape=cylinder fillcolor="#2E7D32" fontcolor="white"];
+    cache [label=<<b>Redis (Upstash)</b><br/><font point-size="9">Live occupancy · Sessions<br/>Idempotency · Rate limit</font>> shape=cylinder fillcolor="#66A366" fontcolor="white"];
+    blob  [label=<<b>Object Storage (S3 / R2)</b><br/><font point-size="9">Plate evidence images<br/>KYC docs · Receipts · Exports</font>> shape=cylinder fillcolor="#66A366" fontcolor="white"];
+  }
+
+  /* ---------------- EXTERNAL ---------------- */
+  subgraph cluster_ext {
+    label=" EXTERNAL SERVICES ";
+    fontsize=13; fontname="Helvetica-Bold";
+    style="rounded,filled"; color="#E0B9B9"; fillcolor="#FDF3F3"; penwidth=1.5;
+
+    pay  [label=<<b>Razorpay</b><br/><font point-size="9">UPI · Dynamic QR · Cards<br/>RazorpayX vendor payouts</font>> fillcolor="#C0504D" fontcolor="white"];
+    comm [label=<<b>Messaging</b><br/><font point-size="9">MSG91 SMS · Resend Email<br/>WhatsApp Cloud · Expo Push</font>> fillcolor="#D9827F" fontcolor="white"];
+    maps [label=<<b>Maps &amp; Geo</b><br/><font point-size="9">Google Maps · Apple Maps<br/>Geocoding · Geo-fencing</font>> fillcolor="#D9827F" fontcolor="white"];
+    anpr [label=<<b>ANPR / OCR Engine</b><br/><font point-size="9">PHASE 2 — not in scope now<br/>Manual plate entry in Phase 1</font>> style="rounded,filled,dashed" fillcolor="#F0E4E4" fontcolor="#8A5A5A" color="#B08080"];
+  }
+
+  /* ---------------- FLOWS ---------------- */
+  admin   -> edge_l [label="HTTPS / RSC"];
+  vendor  -> edge_l [label="HTTPS  JSON"];
+  citizen -> edge_l [label="HTTPS  JSON"];
+
+  edge_l -> mw  [label="every request"];
+  mw     -> api [label="authenticated context"];
+
+  api  -> svc  [label="DTO"];
+  svc  -> repo [label="domain calls"];
+  repo -> db   [label="Prisma / SQL"];
+
+  svc  -> cache [label="read / write"];
+  svc  -> blob  [label="signed PUT / GET"];
+  jobs -> svc   [label="cron trigger"];
+
+  svc -> pay  [label="orders · webhooks · payouts"];
+  svc -> comm [label="receipts · alerts · OTP"];
+  svc -> maps [label="geocode · boundaries"];
+  svc -> anpr [label="Phase 2" style=dashed color="#B08080"];
+
+}
