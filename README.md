@@ -39,6 +39,42 @@ client is constructed with `@prisma/adapter-pg` and no `datasourceUrl` argument.
 
 ---
 
+## Deploying to Vercel
+
+Import the repo in Vercel and leave the build settings on their defaults — the `build`
+script runs `prisma generate && next build`.
+
+**Migrations are deliberately not part of the build.** Running `prisma migrate deploy`
+during a build means it fires on every preview deploy, can race between concurrent
+builds, and turns a bad migration into a failed build instead of a failed deploy. Apply
+them from your machine (or a release step) against the same database instead:
+
+```bash
+# after editing schema.prisma
+set -a && . ./.env.local && set +a   # prisma.config.ts disables Prisma's own .env loading
+npm run db:migrate                   # creates the migration and applies it locally
+git add src/backend/database/prisma/migrations && git commit && git push
+
+# to apply an already-committed migration to another environment
+DATABASE_URL="<target>" npm run db:deploy
+```
+
+### Environment variables
+
+Paste the contents of `.env.local` into Vercel's *Settings → Environment Variables*
+bulk-add, then change two of them:
+
+| Variable | Value on Vercel |
+|---|---|
+| `NODE_ENV` | `production` |
+| `APP_URL` | your Vercel domain |
+
+Every integration key may stay empty. `src/config/env.ts` marks them optional, and the
+portal currently renders from the mock dataset, so the deploy succeeds with nothing but
+the defaults. Fill them in as each integration is wired.
+
+---
+
 ## Documentation
 
 | Document | Path |
