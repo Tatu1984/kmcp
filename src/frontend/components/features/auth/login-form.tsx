@@ -18,6 +18,13 @@ import { startSession, toSessionUser } from "@/frontend/lib/session";
 import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
 
+/**
+ * These are the four staff accounts `prisma/seed.ts` creates in the backend, so
+ * they work against a seeded API as well as against the bundled mock dataset.
+ * Keep this list and the seed's STAFF in step.
+ */
+const DEMO_PASSWORD = "kmcp-demo-2026";
+
 const DEMO_ACCOUNTS = [
   { label: "Super Admin", email: "sudipta.banerjee@kmc.gov.in", role: "Full access" },
   { label: "Administrator", email: "rina.dasgupta@kmc.gov.in", role: "Operations" },
@@ -30,8 +37,8 @@ export function LoginForm() {
   const params = useSearchParams();
   const next = params.get("next") ?? ROUTES.dashboard;
 
-  const [email, setEmail] = React.useState(isLiveApi ? "" : "sudipta.banerjee@kmc.gov.in");
-  const [password, setPassword] = React.useState(isLiveApi ? "" : "kmcp-demo");
+  const [email, setEmail] = React.useState("sudipta.banerjee@kmc.gov.in");
+  const [password, setPassword] = React.useState(DEMO_PASSWORD);
   const [showPassword, setShowPassword] = React.useState(false);
   const [remember, setRemember] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
@@ -179,9 +186,6 @@ export function LoginForm() {
         </p>
       </div>
 
-      {/* Only meaningful without a backend — against a live API these accounts
-          are not real and the buttons would fill in credentials that fail. */}
-      {!isLiveApi && (
       <div className="space-y-3">
         <div className="flex items-center gap-3">
           <Separator className="flex-1" />
@@ -197,7 +201,7 @@ export function LoginForm() {
               type="button"
               onClick={() => {
                 setEmail(account.email);
-                setPassword("kmcp-demo");
+                setPassword(DEMO_PASSWORD);
                 toast.info(`Filled ${account.label}`, { description: account.email });
               }}
               className="rounded-lg border bg-card px-3 py-2 text-left transition-colors hover:border-primary/40 hover:bg-accent/40"
@@ -208,7 +212,6 @@ export function LoginForm() {
           ))}
         </div>
       </div>
-      )}
     </FadeIn>
   );
 }
