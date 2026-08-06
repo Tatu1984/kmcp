@@ -50,13 +50,28 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { SectionCard } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { CMS_PAGES, FAQS, BANNERS } from "@/frontend/lib/mock";
+import { settingsApi } from "@/frontend/api";
+import { useResource } from "@/frontend/hooks/use-api";
+import { toCmsPage, toFaq, toBanner } from "@/frontend/lib/adapters";
 import { formatDate, relativeTime } from "@/shared/utils/common.util";
 import type { Banner, CmsPage, Faq } from "@/shared/types/domain.types";
 
 export function CmsView() {
-  const [pages, setPages] = React.useState<CmsPage[]>(CMS_PAGES);
-  const [faqs, setFaqs] = React.useState<Faq[]>(FAQS);
-  const [banners, setBanners] = React.useState<Banner[]>(BANNERS);
+  const { items: pages, apply: applyPage } = useResource<CmsPage>(
+    ["cms", "pages"],
+    () => settingsApi.pages().then((r) => r.data.map(toCmsPage)),
+    CMS_PAGES,
+  );
+  const { items: faqs, apply: applyFaq } = useResource<Faq>(
+    ["cms", "faqs"],
+    () => settingsApi.faqs().then((r) => r.data.map(toFaq)),
+    FAQS,
+  );
+  const { items: banners, apply: applyBanner } = useResource<Banner>(
+    ["cms", "banners"],
+    () => settingsApi.banners().then((r) => r.data.map(toBanner)),
+    BANNERS,
+  );
 
   const [pageOpen, setPageOpen] = React.useState(false);
   const [faqOpen, setFaqOpen] = React.useState(false);
@@ -153,14 +168,27 @@ export function CmsView() {
                         icon: Send,
                         separatorBefore: true,
                         onSelect: () => {
-                          setPages((list) =>
-                            list.map((p) =>
-                              p.slug === page.slug ? { ...p, published: !p.published } : p,
-                            ),
-                          );
-                          toast.success(page.published ? "Page unpublished" : "Page published", {
-                            description: page.title,
-                          });
+                          void applyPage(
+                            async () => {
+                              // Publishing needs the body, and the list does not
+                              // carry it — fetch, then write it back unchanged.
+                              const { data } = await settingsApi.page(page.slug);
+                              return settingsApi.upsertPage({
+                                slug: page.slug,
+                                title: data.title,
+                                bodyHtml: data.bodyHtml,
+                                publish: !page.published,
+                              });
+                            },
+                            (list) =>
+                              list.map((p) =>
+                                p.slug === page.slug ? { ...p, published: !p.published } : p,
+                              ),
+                            {
+                              success: page.published ? "Page unpublished" : "Page published",
+                              description: page.title,
+                            },
+                          ).catch(() => undefined);
                         },
                       },
                     ]}
@@ -224,10 +252,12 @@ export function CmsView() {
                         size="sm"
                         className="h-7 text-xs"
                         onClick={() => {
-                          setFaqs((list) =>
-                            list.map((f) => (f.id === faq.id ? { ...f, isActive: !f.isActive } : f)),
-                          );
-                          toast.success(faq.isActive ? "FAQ hidden" : "FAQ published");
+                          void applyFaq(
+                            () => settingsApi.updateFaq(faq.id, { isActive: !faq.isActive }),
+                            (list) =>
+                              list.map((f) => (f.id === faq.id ? { ...f, isActive: !f.isActive } : f)),
+                            { success: faq.isActive ? "FAQ hidden" : "FAQ published" },
+                          ).catch(() => undefined);
                         }}
                       >
                         {faq.isActive ? "Hide" : "Publish"}
@@ -274,12 +304,15 @@ export function CmsView() {
                         label: banner.isActive ? "Take down" : "Put live",
                         icon: Megaphone,
                         onSelect: () => {
-                          setBanners((list) =>
-                            list.map((b) => (b.id === banner.id ? { ...b, isActive: !b.isActive } : b)),
-                          );
-                          toast.success(banner.isActive ? "Banner taken down" : "Banner is live", {
-                            description: banner.title,
-                          });
+                          void applyBanner(
+                            () => settingsApi.updateBanner(banner.id, { isActive: !banner.isActive }),
+                            (list) =>
+                              list.map((b) => (b.id === banner.id ? { ...b, isActive: !b.isActive } : b)),
+                            {
+                              success: banner.isActive ? "Banner taken down" : "Banner is live",
+                              description: banner.title,
+                            },
+                          ).catch(() => undefined);
                         },
                       },
                       {
@@ -288,8 +321,11 @@ export function CmsView() {
                         destructive: true,
                         separatorBefore: true,
                         onSelect: () => {
-                          setBanners((list) => list.filter((b) => b.id !== banner.id));
-                          toast.success("Banner deleted");
+                          void applyBanner(
+                            () => settingsApi.removeBanner(banner.id),
+                            (list) => list.filter((b) => b.id !== banner.id),
+                            { success: "Banner deleted", description: banner.title },
+                          ).catch(() => undefined);
                         },
                       },
                     ]}
@@ -510,9 +546,13 @@ export function CmsView() {
         destructive
         confirmLabel="Delete FAQ"
         description="It disappears from the citizen app immediately."
-        onConfirm={() => {
-          setFaqs((list) => list.filter((f) => f.id !== selectedFaq?.id));
-          toast.success("FAQ deleted");
+        onConfirm={async () => {
+          if (!selectedFaq) return;
+          await applyFaq(
+            () => settingsApi.removeFaq(selectedFaq.id),
+            (list) => list.filter((f) => f.id !== selectedFaq.id),
+            { success: "FAQ deleted" },
+          );
         }}
       />
     </div>

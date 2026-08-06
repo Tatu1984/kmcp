@@ -35,16 +35,58 @@ import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { RevenueChart } from "@/frontend/components/features/dashboard/charts";
 import { VendorFormSheet } from "./vendor-form-sheet";
 import { VENDORS, ZONES, ATTENDANTS, SETTLEMENTS, SHIFTS } from "@/frontend/lib/mock";
+import { KycUpload } from "./kyc-upload";
+import { EmptyState } from "@/frontend/components/shared/empty-state";
+import { Skeleton } from "@/frontend/components/ui/skeleton";
+import { vendorsApi, mediaApi } from "@/frontend/api";
+import { useResource } from "@/frontend/hooks/use-api";
+import { toVendor } from "@/frontend/lib/adapters";
+import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatDate, formatDateTime, relativeTime } from "@/shared/utils/common.util";
 import type { Vendor } from "@/shared/types/domain.types";
 
 export function VendorDetailView({ vendorId }: { vendorId: string }) {
   const params = useSearchParams();
-  const base = VENDORS.find((v) => v.id === vendorId)!;
-  const [vendor, setVendor] = React.useState<Vendor>(base);
+  const demoVendor = VENDORS.find((v) => v.id === vendorId);
+
+  // A single record, carried through the same list machinery so the write path
+  // and the demo fallback behave exactly as they do everywhere else.
+  const {
+    items,
+    isLoading,
+    emptyReason,
+    apply,
+    refresh,
+  } = useResource<Vendor>(
+    ["vendors", vendorId],
+    () => vendorsApi.get(vendorId).then((r) => [toVendor(r.data)]),
+    demoVendor ? [demoVendor] : [],
+  );
+  const vendor = items[0];
   const [editOpen, setEditOpen] = React.useState(false);
   const [suspendOpen, setSuspendOpen] = React.useState(false);
+
+  // items[0] is genuinely absent while the first fetch runs, and stays absent
+  // if the id does not exist — neither may be allowed to reach the render below.
+  if (!vendor) {
+    return (
+      <div className="space-y-4">
+        {isLoading ? (
+          <>
+            <Skeleton className="h-9 w-64" />
+            <Skeleton className="h-64 w-full" />
+          </>
+        ) : (
+          <EmptyState
+            icon={Building2}
+            title="Vendor not found"
+            description={emptyReason ?? "No vendor exists with this reference."}
+          />
+        )}
+      </div>
+    );
+  }
 
   const zones = ZONES.filter((z) => z.vendorId === vendor.id);
   const attendants = ATTENDANTS.filter((a) => a.vendorId === vendor.id);
@@ -84,12 +126,21 @@ export function VendorDetailView({ vendorId }: { vendorId: string }) {
               <Button
                 size="sm"
                 className="h-9"
-                onClick={() => {
-                  setVendor({ ...vendor, status: "APPROVED", approvedAt: new Date().toISOString() });
-                  toast.success("Vendor approved", {
-                    description: `${vendor.orgName} can now be assigned kerb.`,
-                  });
-                }}
+                onClick={() =>
+                  void apply(
+                    () => vendorsApi.changeStatus(vendor.id, "APPROVED"),
+                    (list) =>
+                      list.map((v) => ({
+                        ...v,
+                        status: "APPROVED" as const,
+                        approvedAt: new Date().toISOString(),
+                      })),
+                    {
+                      success: "Vendor approved",
+                      description: `${vendor.orgName} can now be assigned kerb.`,
+                    },
+                  ).catch(() => undefined)
+                }
               >
                 <BadgeCheck className="size-4" /> Approve
               </Button>
@@ -261,6 +312,7 @@ export function VendorDetailView({ vendorId }: { vendorId: string }) {
             title="KYC and agreement"
             description="Every document is stored immutably and served through signed URLs"
             contentClassName="p-0"
+            action={<KycUpload vendorId={vendor.id} onUploaded={() => void refresh()} />}
           >
             <ul className="divide-y divide-border/60">
               {vendor.documents.map((doc) => (
@@ -282,27 +334,59 @@ export function VendorDetailView({ vendorId }: { vendorId: string }) {
                   <RowActions
                     label={doc.type}
                     actions={[
-                      { label: "View document", icon: Download, onSelect: () => toast.info("Opening signed URL", { description: doc.fileName }) },
+                      {
+                        label: "View document",
+                        icon: Download,
+                        onSelect: async () => {
+                          if (!isLiveApi || !doc.mediaId) {
+                            toast.info("Opening signed URL", { description: doc.fileName });
+                            return;
+                          }
+                          try {
+                            const { data } = await mediaApi.url(doc.mediaId);
+                            window.open(data.url, "_blank", "noopener,noreferrer");
+                          } catch {
+                            toast.error("That document could not be opened.");
+                          }
+                        },
+                      },
                       {
                         label: "Mark verified",
                         icon: BadgeCheck,
                         hidden: doc.verified,
-                        onSelect: () => {
-                          setVendor({
-                            ...vendor,
-                            documents: vendor.documents.map((d) =>
-                              d.id === doc.id ? { ...d, verified: true } : d,
-                            ),
-                          });
-                          toast.success("Document verified", { description: doc.fileName });
-                        },
+                        onSelect: () =>
+                          void apply(
+                            () => vendorsApi.verifyDocument(doc.id, true),
+                            (list) =>
+                              list.map((v) => ({
+                                ...v,
+                                documents: v.documents.map((d) =>
+                                  d.id === doc.id ? { ...d, verified: true } : d,
+                                ),
+                              })),
+                            { success: "Document verified", description: doc.type.replace("_", " ") },
+                          ).catch(() => undefined),
                       },
                       {
                         label: "Reject document",
                         icon: Ban,
                         destructive: true,
                         separatorBefore: true,
-                        onSelect: () => toast.error("Document rejected", { description: "The vendor is asked to re-upload." }),
+                        onSelect: () =>
+                          void apply(
+                            () => vendorsApi.verifyDocument(doc.id, false),
+                            (list) =>
+                              list.map((v) => ({
+                                ...v,
+                                documents: v.documents.map((d) =>
+                                  d.id === doc.id ? { ...d, verified: false } : d,
+                                ),
+                              })),
+                            {
+                              success: "Document rejected",
+                              description: "The vendor is asked to re-upload.",
+                            },
+                          ).catch(() => undefined),
                       },
                     ]}
                   />
@@ -443,7 +527,13 @@ export function VendorDetailView({ vendorId }: { vendorId: string }) {
         open={editOpen}
         onOpenChange={setEditOpen}
         vendor={vendor}
-        onSaved={(draft) => setVendor((v) => ({ ...v, ...draft }) as Vendor)}
+        onSaved={(draft) =>
+          apply(
+            () => vendorsApi.update(vendor.id, draft as Record<string, unknown>),
+            (list) => list.map((v) => ({ ...v, ...draft }) as Vendor),
+            { success: "Vendor updated", description: vendor.orgName },
+          )
+        }
       />
 
       <ConfirmDialog
@@ -454,9 +544,12 @@ export function VendorDetailView({ vendorId }: { vendorId: string }) {
         confirmLabel="Suspend vendor"
         reason={{ label: "Reason", placeholder: "Repeated cash variance / KYC lapsed…", required: true }}
         description="Attendant logins are revoked and no new sessions can be started. Running sessions and approved settlements are unaffected."
-        onConfirm={() => {
-          setVendor({ ...vendor, status: "SUSPENDED" });
-          toast.success("Vendor suspended", { description: vendor.orgName });
+        onConfirm={async (reason) => {
+          await apply(
+            () => vendorsApi.changeStatus(vendor.id, "SUSPENDED", reason),
+            (list) => list.map((v) => ({ ...v, status: "SUSPENDED" as const })),
+            { success: "Vendor suspended", description: vendor.orgName },
+          );
         }}
       />
 

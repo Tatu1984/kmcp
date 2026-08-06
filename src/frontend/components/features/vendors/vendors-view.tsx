@@ -41,12 +41,42 @@ import { Money, PersonCell } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { VendorFormSheet } from "./vendor-form-sheet";
 import { VENDORS, DASHBOARD } from "@/frontend/lib/mock";
+import { vendorsApi } from "@/frontend/api";
+import { useResource } from "@/frontend/hooks/use-api";
+import { toVendor } from "@/frontend/lib/adapters";
 import { ROUTES } from "@/shared/constants/routes";
 import type { Vendor, VendorStatus } from "@/shared/types/domain.types";
 
+/** The form edits the rendered shape; the API takes its own. Only send what changed. */
+function toVendorPayload(draft: Partial<Vendor>): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  const put = (key: string, value: unknown) => {
+    if (value !== undefined && value !== "") payload[key] = value;
+  };
+  put("orgName", draft.orgName);
+  put("contactName", draft.contactName);
+  put("contactPhone", draft.contactPhone);
+  put("email", draft.email);
+  put("gstin", draft.gstin);
+  put("pan", draft.pan);
+  put("bankAccountNo", draft.bankAccountNo);
+  put("bankIfsc", draft.bankIfsc);
+  put("commissionPct", draft.commissionPct);
+  return payload;
+}
+
 export function VendorsView() {
   const router = useRouter();
-  const [vendors, setVendors] = React.useState<Vendor[]>(VENDORS);
+  const {
+    items: vendors,
+    isLoading,
+    emptyReason,
+    apply,
+  } = useResource<Vendor>(
+    ["vendors", "list"],
+    () => vendorsApi.list({ pageSize: 200 }).then((r) => r.data.map(toVendor)),
+    VENDORS,
+  );
   const [selected, setSelected] = React.useState<Vendor | null>(null);
   const [formOpen, setFormOpen] = React.useState(false);
   const [commissionOpen, setCommissionOpen] = React.useState(false);
@@ -54,17 +84,19 @@ export function VendorsView() {
   const [suspendOpen, setSuspendOpen] = React.useState(false);
   const [commission, setCommission] = React.useState(18);
 
-  const setStatus = (vendor: Vendor, status: VendorStatus, message: string) => {
-    setVendors((list) => list.map((v) => (v.id === vendor.id ? { ...v, status } : v)));
-    toast.success(message, {
-      description: vendor.orgName,
-      action: {
-        label: "Undo",
-        onClick: () =>
-          setVendors((list) => list.map((v) => (v.id === vendor.id ? { ...v, status: vendor.status } : v))),
-      },
-    });
-  };
+  const setStatus = React.useCallback(
+    (vendor: Vendor, status: VendorStatus, message: string, reason?: string) => {
+    // No undo action here. Against the API this has already been written to the
+    // audit trail under someone's name; reversing it is a second decision, not
+    // a retraction, and it should be made deliberately.
+    void apply(
+      () => vendorsApi.changeStatus(vendor.id, status, reason),
+      (list) => list.map((v) => (v.id === vendor.id ? { ...v, status } : v)),
+      { success: message, description: vendor.orgName },
+    ).catch(() => undefined);
+    },
+    [apply],
+  );
 
   const columns = React.useMemo<ColumnDef<Vendor, unknown>[]>(
     () => [
@@ -126,8 +158,8 @@ export function VendorsView() {
         meta: "Pending payout",
         cell: ({ row }) => (
           <Money
-            value={row.original.pendingSettlement}
-            className={row.original.pendingSettlement > 300000_00 ? "text-amber-600 dark:text-amber-400" : undefined}
+            value={(row.original.pendingSettlement ?? 0)}
+            className={(row.original.pendingSettlement ?? 0) > 300000_00 ? "text-amber-600 dark:text-amber-400" : undefined}
           />
         ),
       },
@@ -236,11 +268,11 @@ export function VendorsView() {
         },
       },
     ],
-    [router],
+    [router, setStatus],
   );
 
   const pending = vendors.filter((v) => v.status === "PENDING").length;
-  const totalPayout = vendors.reduce((s, v) => s + v.pendingSettlement, 0);
+  const totalPayout = vendors.reduce((s, v) => s + (v.pendingSettlement ?? 0), 0);
 
   return (
     <div className="space-y-6">
@@ -340,35 +372,42 @@ export function VendorsView() {
             </Button>
           </>
         )}
-        emptyTitle="No vendors registered"
-        emptyDescription="Register a parking operator to assign them kerbside zones."
+        isLoading={isLoading}
+        emptyTitle={emptyReason ? "Nothing to show" : "No vendors registered"}
+        emptyDescription={
+          emptyReason ?? "Register a parking operator to assign them kerbside zones."
+        }
       />
 
       <VendorFormSheet
         open={formOpen}
         onOpenChange={setFormOpen}
         vendor={selected}
-        onSaved={(draft) => {
-          if (selected) {
-            setVendors((list) => list.map((v) => (v.id === selected.id ? ({ ...v, ...draft } as Vendor) : v)));
-          } else {
-            setVendors((list) => [
-              {
-                ...(draft as Vendor),
-                id: `ven_new_${list.length}`,
-                status: "PENDING",
-                zoneCount: 0,
-                attendantCount: 0,
-                revenueMonth: 0,
-                pendingSettlement: 0,
-                kycComplete: false,
-                documents: [],
-                createdAt: new Date().toISOString(),
-              },
-              ...list,
-            ]);
-          }
-        }}
+        onSaved={(draft) =>
+          apply(
+            () =>
+              selected
+                ? vendorsApi.update(selected.id, toVendorPayload(draft))
+                : vendorsApi.create(toVendorPayload(draft)),
+            (list) =>
+              selected
+                ? list.map((v) => (v.id === selected.id ? ({ ...v, ...draft } as Vendor) : v))
+                : [
+                    {
+                      ...(draft as Vendor),
+                      id: `ven_new_${list.length}`,
+                      status: "PENDING",
+                      zoneCount: 0,
+                      attendantCount: 0,
+                      kycComplete: false,
+                      documents: [],
+                      createdAt: new Date().toISOString(),
+                    },
+                    ...list,
+                  ],
+            { success: selected ? "Vendor updated" : "Vendor registered", description: draft.orgName },
+          )
+        }
       />
 
       {/* ------------------------------------------------------- commission */}
@@ -429,13 +468,23 @@ export function VendorsView() {
             </Button>
             <Button
               onClick={() => {
-                setVendors((list) =>
-                  list.map((v) => (v.id === selected?.id ? { ...v, commissionPct: commission } : v)),
-                );
-                setCommissionOpen(false);
-                toast.success("Commission updated", {
-                  description: `${selected?.orgName} → ${commission}%. Applies from the next settlement cycle.`,
-                });
+                if (!selected) return;
+                void apply(
+                  () =>
+                    vendorsApi.setCommission(
+                      selected.id,
+                      commission,
+                      "Changed from the vendor screen",
+                    ),
+                  (list) =>
+                    list.map((v) => (v.id === selected.id ? { ...v, commissionPct: commission } : v)),
+                  {
+                    success: "Commission updated",
+                    description: `${selected.orgName} → ${commission}%. Applies from the next settlement cycle.`,
+                  },
+                )
+                  .then(() => setCommissionOpen(false))
+                  .catch(() => undefined);
               }}
             >
               Save commission
@@ -470,7 +519,7 @@ export function VendorsView() {
               Blocking ends the contract relationship. All attendant logins are revoked immediately,
               every assigned zone is released, and no new sessions can be started.
             </p>
-            {selected && selected.pendingSettlement > 0 && (
+            {selected && (selected.pendingSettlement ?? 0) > 0 && (
               <p className="font-medium text-destructive">
                 This vendor has an outstanding payout. Settle or write it off before blocking.
               </p>

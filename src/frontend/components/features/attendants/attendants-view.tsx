@@ -46,10 +46,40 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, PersonCell } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { ATTENDANTS, VENDORS, ZONES } from "@/frontend/lib/mock";
+import { attendantsApi, vendorsApi, zonesApi } from "@/frontend/api";
+import { useResource } from "@/frontend/hooks/use-api";
+import { toAttendant } from "@/frontend/lib/adapters";
 import type { Attendant } from "@/shared/types/domain.types";
 
 export function AttendantsView() {
-  const [attendants, setAttendants] = React.useState<Attendant[]>(ATTENDANTS);
+  const {
+    items: attendants,
+    isLoading,
+    emptyReason,
+    apply,
+  } = useResource<Attendant>(
+    ["attendants", "list"],
+    () => attendantsApi.list({ pageSize: 300 }).then((r) => r.data.map(toAttendant)),
+    ATTENDANTS,
+  );
+
+  const { items: vendorOptions } = useResource<{ id: string; orgName: string }>(
+    ["vendors", "approved"],
+    () =>
+      vendorsApi
+        .list({ status: "APPROVED", pageSize: 100 })
+        .then((r) => r.data.map((v) => ({ id: v.id, orgName: v.orgName }))),
+    VENDORS.filter((v) => v.status === "APPROVED").map((v) => ({ id: v.id, orgName: v.orgName })),
+  );
+
+  const { items: zoneOptions } = useResource<{ id: string; code: string; name: string }>(
+    ["zones", "picker"],
+    () =>
+      zonesApi
+        .list({ pageSize: 200 })
+        .then((r) => r.data.map((z) => ({ id: z.id, code: z.code, name: z.name }))),
+    ZONES.map((z) => ({ id: z.id, code: z.code, name: z.name })),
+  );
   const [selected, setSelected] = React.useState<Attendant | null>(null);
   const [formOpen, setFormOpen] = React.useState(false);
   const [deactivateOpen, setDeactivateOpen] = React.useState(false);
@@ -152,33 +182,40 @@ export function AttendantsView() {
                     label: "Assign zone",
                     icon: LandPlot,
                     separatorBefore: true,
-                    children: ZONES.filter((z) => z.vendorId === attendant.vendorId)
+                    children: zoneOptions
                       .slice(0, 8)
                       .map((z) => ({
                         label: z.name,
-                        onSelect: () => {
-                          setAttendants((list) =>
-                            list.map((a) =>
-                              a.id === attendant.id ? { ...a, zoneId: z.id, zoneName: z.name } : a,
-                            ),
-                          );
-                          toast.success("Zone assigned", { description: `${attendant.name} → ${z.name}` });
-                        },
+                        onSelect: () =>
+                          void apply(
+                            () => attendantsApi.update(attendant.id, { defaultZoneId: z.id }),
+                            (list) =>
+                              list.map((a) =>
+                                a.id === attendant.id ? { ...a, zoneId: z.id, zoneName: z.name } : a,
+                              ),
+                            { success: "Zone assigned", description: `${attendant.name} → ${z.name}` },
+                          ).catch(() => undefined),
                       })),
                   },
                   {
                     label: "Move to vendor",
                     icon: Building2,
-                    children: VENDORS.filter((v) => v.status === "APPROVED").map((v) => ({
+                    children: vendorOptions.map((v) => ({
                       label: v.orgName,
-                      onSelect: () => {
-                        setAttendants((list) =>
-                          list.map((a) =>
-                            a.id === attendant.id ? { ...a, vendorId: v.id, vendorName: v.orgName } : a,
-                          ),
-                        );
-                        toast.success("Attendant moved", { description: v.orgName });
-                      },
+                      onSelect: () =>
+                        void apply(
+                          () =>
+                            attendantsApi.transfer(
+                              attendant.id,
+                              v.id,
+                              "Moved from the attendants screen",
+                            ),
+                          (list) =>
+                            list.map((a) =>
+                              a.id === attendant.id ? { ...a, vendorId: v.id, vendorName: v.orgName } : a,
+                            ),
+                          { success: "Attendant moved", description: v.orgName },
+                        ).catch(() => undefined),
                     })),
                   },
                   {
@@ -217,10 +254,13 @@ export function AttendantsView() {
                         setSelected(attendant);
                         setDeactivateOpen(true);
                       } else {
-                        setAttendants((list) =>
-                          list.map((a) => (a.id === attendant.id ? { ...a, isActive: true } : a)),
-                        );
-                        toast.success("Attendant reactivated", { description: attendant.name });
+                        void apply(
+                          () =>
+                            attendantsApi.setActive(attendant.id, true, "Reactivated from the portal"),
+                          (list) =>
+                            list.map((a) => (a.id === attendant.id ? { ...a, isActive: true } : a)),
+                          { success: "Attendant reactivated", description: attendant.name },
+                        ).catch(() => undefined);
                       }
                     },
                   },
@@ -231,7 +271,7 @@ export function AttendantsView() {
         },
       },
     ],
-    [],
+    [apply, vendorOptions, zoneOptions],
   );
 
   const onShift = attendants.filter((a) => a.onShift).length;
@@ -337,19 +377,28 @@ export function AttendantsView() {
               size="sm"
               variant="outline"
               className="h-7"
-              onClick={() => {
-                setAttendants((list) =>
-                  list.map((a) => (rows.some((r) => r.id === a.id) ? { ...a, deviceBound: false } : a)),
-                );
-                toast.success(`${rows.length} devices unbound`);
-                clear();
-              }}
+              onClick={() =>
+                void apply(
+                  () =>
+                    Promise.all(
+                      rows.map((a) =>
+                        attendantsApi.unbindDevices(a.id, "Bulk unbind from the portal"),
+                      ),
+                    ),
+                  (list) =>
+                    list.map((a) => (rows.some((r) => r.id === a.id) ? { ...a, deviceBound: false } : a)),
+                  { success: `${rows.length} devices unbound` },
+                )
+                  .then(clear)
+                  .catch(() => undefined)
+              }
             >
               Unbind devices
             </Button>
           </>
         )}
-        emptyTitle="No attendants"
+        isLoading={isLoading}
+        emptyTitle={emptyReason ? "Nothing to show" : "No attendants"}
         emptyDescription="Vendors add field staff here so they can sign in to the vendor app."
       />
 
@@ -384,7 +433,7 @@ export function AttendantsView() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {VENDORS.filter((v) => v.status === "APPROVED").map((v) => (
+                  {vendorOptions.map((v) => (
                     <SelectItem key={v.id} value={v.id}>
                       {v.orgName}
                     </SelectItem>
@@ -399,7 +448,7 @@ export function AttendantsView() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {ZONES.map((z) => (
+                  {zoneOptions.map((z) => (
                     <SelectItem key={z.id} value={z.id}>
                       {z.code} · {z.name}
                     </SelectItem>
@@ -437,11 +486,19 @@ export function AttendantsView() {
         confirmLabel="Deactivate"
         reason={{ label: "Reason", placeholder: "Left the vendor / disciplinary / transferred…", required: true }}
         description="They can no longer sign in to the vendor app or start sessions. Any open shift must be closed and reconciled first."
-        onConfirm={() => {
-          setAttendants((list) =>
-            list.map((a) => (a.id === selected?.id ? { ...a, isActive: false, onShift: false } : a)),
+        onConfirm={async (reason) => {
+          if (!selected) return;
+          await apply(
+            () =>
+              attendantsApi.setActive(
+                selected.id,
+                false,
+                reason ?? "Deactivated from the portal",
+              ),
+            (list) =>
+              list.map((a) => (a.id === selected.id ? { ...a, isActive: false, onShift: false } : a)),
+            { success: "Attendant deactivated", description: selected.name },
           );
-          toast.success("Attendant deactivated", { description: selected?.name });
         }}
       />
 
@@ -451,11 +508,13 @@ export function AttendantsView() {
         title={`Unbind ${selected?.name}'s device?`}
         confirmLabel="Unbind device"
         description="Their current device stops working immediately. The next sign-in binds whichever device they use — do this only when a handset is lost or replaced."
-        onConfirm={() => {
-          setAttendants((list) =>
-            list.map((a) => (a.id === selected?.id ? { ...a, deviceBound: false } : a)),
+        onConfirm={async (reason) => {
+          if (!selected) return;
+          await apply(
+            () => attendantsApi.unbindDevices(selected.id, reason ?? "Handset lost or replaced"),
+            (list) => list.map((a) => (a.id === selected.id ? { ...a, deviceBound: false } : a)),
+            { success: "Device unbound", description: `${selected.name} can register a new device.` },
           );
-          toast.success("Device unbound", { description: `${selected?.name} can register a new device.` });
         }}
       />
 

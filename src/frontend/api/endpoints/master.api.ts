@@ -126,6 +126,10 @@ export const attendantsApi = {
 
   transfer: (id: string, vendorId: string, reason: string) =>
     api.post<ApiAttendant>(`/attendants/${id}/transfer`, { vendorId, reason }),
+
+  /** Releases every bound device and ends the attendant's sessions with it. */
+  unbindDevices: (id: string, reason: string) =>
+    api.post<{ unbound: true; devicesReleased: number }>(`/attendants/${id}/unbind-device`, { reason }),
 };
 
 /* -------------------------------------------------------------------- users */

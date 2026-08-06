@@ -77,11 +77,11 @@ export function RevenueView() {
   const zoneRevenue = [...ZONES].sort((a, b) => (b.revenueMonth ?? 0) - (a.revenueMonth ?? 0));
   const maxZoneRevenue = zoneRevenue[0]?.revenueMonth ?? 1;
   const vendorRevenue = [...VENDORS]
-    .filter((v) => v.revenueMonth > 0)
-    .sort((a, b) => b.revenueMonth - a.revenueMonth);
-  const totalVendorRevenue = vendorRevenue.reduce((s, v) => s + v.revenueMonth, 0);
+    .filter((v) => (v.revenueMonth ?? 0) > 0)
+    .sort((a, b) => (b.revenueMonth ?? 0) - (a.revenueMonth ?? 0));
+  const totalVendorRevenue = vendorRevenue.reduce((s, v) => s + (v.revenueMonth ?? 0), 0);
   const govtShare = vendorRevenue.reduce(
-    (s, v) => s + Math.round((v.revenueMonth * v.commissionPct) / 100),
+    (s, v) => s + Math.round(((v.revenueMonth ?? 0) * v.commissionPct) / 100),
     0,
   );
 
@@ -257,7 +257,7 @@ export function RevenueView() {
           <SectionCard title="Vendor-wise revenue" description="Gross, commission and net" contentClassName="p-0">
             <ul className="divide-y divide-border/60">
               {vendorRevenue.map((vendor) => {
-                const commission = Math.round((vendor.revenueMonth * vendor.commissionPct) / 100);
+                const commission = Math.round(((vendor.revenueMonth ?? 0) * vendor.commissionPct) / 100);
                 return (
                   <li key={vendor.id}>
                     <Link
@@ -275,7 +275,7 @@ export function RevenueView() {
                       </Badge>
                       <div className="w-24 text-right">
                         <p className="text-[11px] text-muted-foreground">Gross</p>
-                        <Money value={vendor.revenueMonth} compact className="text-sm" />
+                        <Money value={(vendor.revenueMonth ?? 0)} compact className="text-sm" />
                       </div>
                       <div className="w-24 text-right">
                         <p className="text-[11px] text-muted-foreground">Municipal</p>
@@ -283,7 +283,7 @@ export function RevenueView() {
                       </div>
                       <div className="w-24 text-right">
                         <p className="text-[11px] text-muted-foreground">Vendor</p>
-                        <Money value={vendor.revenueMonth - commission} compact className="text-sm font-medium" />
+                        <Money value={(vendor.revenueMonth ?? 0) - commission} compact className="text-sm font-medium" />
                       </div>
                     </Link>
                   </li>

@@ -31,3 +31,5 @@ export type {
   ApiFaq,
   ApiBanner,
 } from "./endpoints/master.api";
+export { mediaApi, uploadFile, rbacApi } from "./endpoints/media.api";
+export type { MediaPurpose, UploadTicket, ApiMedia, RbacMatrix } from "./endpoints/media.api";

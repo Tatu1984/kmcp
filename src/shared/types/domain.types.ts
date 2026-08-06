@@ -133,10 +133,18 @@ export interface Vendor {
   status: VendorStatus;
   zoneCount: number;
   attendantCount: number;
-  revenueMonth: Paise;
-  pendingSettlement: Paise;
+  /** Settlement figures; absent until the settlement module exists. */
+  revenueMonth?: Paise;
+  pendingSettlement?: Paise;
   kycComplete: boolean;
-  documents: { id: string; type: string; fileName: string; verified: boolean; uploadedAt: string }[];
+  documents: {
+    id: string;
+    type: string;
+    fileName: string;
+    mediaId?: string;
+    verified: boolean;
+    uploadedAt: string;
+  }[];
   approvedAt?: string;
   createdAt: string;
 }

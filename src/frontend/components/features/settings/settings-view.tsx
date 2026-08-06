@@ -51,9 +51,14 @@ import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, SectionCard } from "@/frontend/components/shared/bits";
 import { PORTAL_USERS } from "@/frontend/lib/mock";
+import { usersApi, rbacApi, settingsApi, ApiError } from "@/frontend/api";
+import { isLiveApi } from "@/config/env";
+import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
+import { toUser } from "@/frontend/lib/adapters";
 import { useSession } from "@/frontend/hooks/use-session";
 import { PERMISSION_GROUPS, ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS, type Role } from "@/shared/constants/roles";
-import { ROLE_PERMISSIONS } from "@/backend/utils/rbac.util";
+import type { User } from "@/shared/types/domain.types";
+
 import { APP, SETTLEMENT_CYCLES } from "@/config/app.config";
 import { formatDateTime, relativeTime } from "@/shared/utils/common.util";
 
@@ -76,31 +81,91 @@ export function SettingsView() {
   const [dirty, setDirty] = React.useState(false);
   const [revokeOpen, setRevokeOpen] = React.useState(false);
   const [wipeOpen, setWipeOpen] = React.useState(false);
-  const [permissions, setPermissions] = React.useState<Record<string, Set<string>>>(() => {
+  const [passwordOpen, setPasswordOpen] = React.useState(false);
+  const [passwordTarget, setPasswordTarget] = React.useState<User | null>(null);
+  const [newPassword, setNewPassword] = React.useState("");
+
+  // Read once from the API so the fields show what the platform is actually
+  // using rather than the build-time defaults.
+  const config = useApiQuery(["config"], () => settingsApi.config().then((r) => r.data));
+  const configValue = React.useCallback(
+    (key: string, fallback: number): number => {
+      const namespace = key.split(".")[0];
+      const entry = config.data?.namespaces?.[namespace]?.find((e) => e.key === key);
+      return typeof entry?.value === "number" ? entry.value : fallback;
+    },
+    [config.data],
+  );
+
+  const [taxes, setTaxes] = React.useState({ gstPercent: 18, commissionPct: 18, gracePeriodMin: 10 });
+  // Seed once from the API, using the state-during-render pattern rather than a
+  // ref — the compiler rightly refuses ref reads while rendering.
+  const [seeded, setSeeded] = React.useState(false);
+  if (config.data && !seeded) {
+    setSeeded(true);
+    setTaxes({
+      gstPercent: configValue("tax.gstPercent", 18),
+      commissionPct: configValue("settlement.defaultCommissionPct", 18),
+      gracePeriodMin: configValue("ops.defaultGracePeriodMin", 10),
+    });
+  }
+  const {
+    items: portalUsers,
+    apply: applyUser,
+  } = useResource<User>(
+    ["users", "staff"],
+    () => usersApi.list({ staffOnly: true, pageSize: 100 }).then((r) => r.data.map(toUser)),
+    PORTAL_USERS,
+  );
+
+  // The authorisation matrix comes from the server, which is the thing that
+  // enforces it. The portal used to keep its own copy, so this screen could
+  // disagree with reality and nobody would know.
+  const matrix = useApiQuery(["rbac", "matrix"], () => rbacApi.matrix().then((r) => r.data));
+
+  const permissionGroups = matrix.data?.groups ?? PERMISSION_GROUPS;
+
+  const permissions = React.useMemo<Record<string, Set<string>>>(() => {
     const map: Record<string, Set<string>> = {};
-    (Object.keys(ROLE_PERMISSIONS) as Role[]).forEach((role) => {
-      const grants = ROLE_PERMISSIONS[role];
-      map[role] =
-        grants === "*"
-          ? new Set(PERMISSION_GROUPS.flatMap((g) => g.permissions.map((p) => p.key)))
-          : new Set(grants);
-    });
+    for (const role of matrix.data?.roles ?? []) map[role.role] = new Set(role.permissions);
+    if (!matrix.data) {
+      // Demo fallback: everything the groups list, for the roles the portal knows.
+      const all = PERMISSION_GROUPS.flatMap((g) => g.permissions.map((p) => p.key));
+      for (const role of Object.values(ROLES) as Role[]) {
+        map[role] = new Set(role === "SUPER_ADMIN" ? all : []);
+      }
+    }
     return map;
-  });
+  }, [matrix.data]);
 
-  const togglePermission = (role: Role, key: string) => {
-    setPermissions((prev) => {
-      const next = { ...prev, [role]: new Set(prev[role]) };
-      if (next[role].has(key)) next[role].delete(key);
-      else next[role].add(key);
-      return next;
-    });
-    setDirty(true);
-  };
-
-  const save = () => {
-    setDirty(false);
-    toast.success("Settings saved", { description: "Changes are recorded in the audit trail." });
+  // The general/tax/notification tabs are still uncontrolled inputs rendered
+  // from app.config defaults. Persisting them needs each field bound to a
+  // namespaced config key first; until then this saves what is genuinely
+  // editable rather than claiming to have saved everything.
+  const [saving, setSaving] = React.useState(false);
+  const save = async () => {
+    if (!isLiveApi) {
+      setDirty(false);
+      toast.success("Settings saved", { description: "Changes are recorded in the audit trail." });
+      return;
+    }
+    setSaving(true);
+    try {
+      await settingsApi.setConfigBulk(
+        [
+          { key: "tax.gstPercent", value: taxes.gstPercent },
+          { key: "settlement.defaultCommissionPct", value: taxes.commissionPct },
+          { key: "ops.defaultGracePeriodMin", value: taxes.gracePeriodMin },
+        ],
+        "Saved from portal settings",
+      );
+      setDirty(false);
+      toast.success("Settings saved", { description: "Changes are recorded in the audit trail." });
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Those settings did not save.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -109,8 +174,8 @@ export function SettingsView() {
         title="Settings"
         description="Platform configuration, integrations, roles and data governance."
         actions={
-          <Button size="sm" className="h-9" onClick={save} disabled={!dirty}>
-            <Save className="size-4" /> {dirty ? "Save changes" : "Saved"}
+          <Button size="sm" className="h-9" onClick={() => void save()} disabled={!dirty || saving}>
+            <Save className="size-4" /> {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
           </Button>
         }
       />
@@ -203,7 +268,15 @@ export function SettingsView() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="ops-grace">Default grace period (minutes)</Label>
-                <Input id="ops-grace" type="number" defaultValue={10} onChange={() => setDirty(true)} />
+                <Input
+                  id="ops-grace"
+                  type="number"
+                  value={taxes.gracePeriodMin}
+                  onChange={(e) => {
+                    setTaxes((t) => ({ ...t, gracePeriodMin: Number(e.target.value) }));
+                    setDirty(true);
+                  }}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="ops-overstay">Overstay threshold (hours)</Label>
@@ -230,7 +303,15 @@ export function SettingsView() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="tax-gst">GST rate (%)</Label>
-                <Input id="tax-gst" type="number" defaultValue={18} onChange={() => setDirty(true)} />
+                <Input
+                  id="tax-gst"
+                  type="number"
+                  value={taxes.gstPercent}
+                  onChange={(e) => {
+                    setTaxes((t) => ({ ...t, gstPercent: Number(e.target.value) }));
+                    setDirty(true);
+                  }}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="tax-gstin">Authority GSTIN</Label>
@@ -278,7 +359,15 @@ export function SettingsView() {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="settle-commission">Default commission (%)</Label>
-                <Input id="settle-commission" type="number" defaultValue={18} onChange={() => setDirty(true)} />
+                <Input
+                  id="settle-commission"
+                  type="number"
+                  value={taxes.commissionPct}
+                  onChange={(e) => {
+                    setTaxes((t) => ({ ...t, commissionPct: Number(e.target.value) }));
+                    setDirty(true);
+                  }}
+                />
               </div>
             </div>
             <Separator className="my-4" />
@@ -491,7 +580,7 @@ export function SettingsView() {
             description="Enforced in middleware and re-asserted in every scoped service method"
           >
             <div className="space-y-5">
-              {PERMISSION_GROUPS.map((group) => (
+              {permissionGroups.map((group) => (
                 <div key={group.key} className="space-y-2">
                   <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
                     {group.label}
@@ -527,9 +616,13 @@ export function SettingsView() {
                               .map((role) => (
                                 <TableCell key={role} className="text-center">
                                   <Checkbox
-                                    checked={permissions[role]?.has(permission.key)}
-                                    disabled={role === "SUPER_ADMIN"}
-                                    onCheckedChange={() => togglePermission(role, permission.key)}
+                                    checked={permissions[role]?.has(permission.key) ?? false}
+                                    // Read-only on purpose. The matrix is code:
+                                    // reviewed, versioned and deployed. An
+                                    // editable copy here would let an admin
+                                    // believe they had changed something the
+                                    // server would carry on ignoring.
+                                    disabled
                                     aria-label={`${permission.label} for ${ROLE_LABELS[role]}`}
                                   />
                                 </TableCell>
@@ -582,7 +675,7 @@ export function SettingsView() {
             }
           >
             <ul className="divide-y divide-border/60">
-              {PORTAL_USERS.map((user) => (
+              {portalUsers.map((user) => (
                 <li key={user.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{user.name}</p>
@@ -605,18 +698,48 @@ export function SettingsView() {
                   <RowActions
                     label={user.name}
                     actions={[
-                      { label: "Change role", icon: ShieldCheck, children: (Object.values(ROLES) as Role[]).filter((r) => r !== "CITIZEN").map((r) => ({ label: ROLE_LABELS[r], onSelect: () => toast.success("Role changed", { description: `${user.name} → ${ROLE_LABELS[r]}` }) })) },
-                      { label: "Reset password", icon: KeyRound, onSelect: () => toast.success("Reset link sent", { description: user.email }) },
-                      { label: "Require 2FA", icon: BadgeCheck, hidden: user.twoFactorEnabled, onSelect: () => toast.success("2FA enforcement enabled", { description: user.name }) },
+                      {
+                        label: "Change role",
+                        icon: ShieldCheck,
+                        children: (Object.values(ROLES) as Role[])
+                          .filter((r) => r !== "CITIZEN" && r !== "VENDOR" && r !== "ATTENDANT")
+                          .map((r) => ({
+                            label: ROLE_LABELS[r],
+                            onSelect: () =>
+                              void applyUser(
+                                () => usersApi.changeRole(user.id, r, "Changed from portal settings"),
+                                (list) => list.map((u) => (u.id === user.id ? { ...u, role: r } : u)),
+                                {
+                                  success: "Role changed",
+                                  description: `${user.name} → ${ROLE_LABELS[r]}. Their sessions have ended.`,
+                                },
+                              ).catch(() => undefined),
+                          })),
+                      },
+                      {
+                        label: "Reset password",
+                        icon: KeyRound,
+                        onSelect: () => {
+                          setPasswordTarget(user);
+                          setPasswordOpen(true);
+                        },
+                      },
                       {
                         label: user.status === "SUSPENDED" ? "Reinstate" : "Suspend access",
                         icon: Trash2,
                         destructive: user.status !== "SUSPENDED",
                         separatorBefore: true,
-                        onSelect: () =>
-                          toast.success(user.status === "SUSPENDED" ? "Access restored" : "Access suspended", {
-                            description: user.name,
-                          }),
+                        onSelect: () => {
+                          const next = user.status === "SUSPENDED" ? "ACTIVE" : "SUSPENDED";
+                          void applyUser(
+                            () => usersApi.changeStatus(user.id, next, "Changed from portal settings"),
+                            (list) => list.map((u) => (u.id === user.id ? { ...u, status: next } : u)),
+                            {
+                              success: next === "ACTIVE" ? "Access restored" : "Access suspended",
+                              description: user.name,
+                            },
+                          ).catch(() => undefined);
+                        },
                       },
                     ]}
                   />
@@ -860,6 +983,62 @@ export function SettingsView() {
           </SectionCard>
         </TabsContent>
       </Tabs>
+
+      <ConfirmDialog
+        open={passwordOpen}
+        onOpenChange={(open) => {
+          setPasswordOpen(open);
+          if (!open) setNewPassword("");
+        }}
+        title={`Set a new password for ${passwordTarget?.name}?`}
+        confirmLabel="Set password"
+        reason={{
+          label: "Why is this being reset?",
+          placeholder: "Locked out / suspected compromise…",
+          required: true,
+        }}
+        description={
+          <div className="space-y-3">
+            <p>
+              Every session this account has open will end. The password itself is never written to
+              the audit trail — only that it was changed, by whom, and why.
+            </p>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-password">New password</Label>
+              <Input
+                id="new-password"
+                type="text"
+                autoComplete="new-password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="At least 10 characters"
+                className="font-mono"
+              />
+              <p className="text-xs text-muted-foreground">
+                Read it to them over the phone; they should change it after signing in.
+              </p>
+            </div>
+          </div>
+        }
+        onConfirm={async (reason) => {
+          if (!passwordTarget) return;
+          if (newPassword.length < 10) {
+            toast.error("A portal password is at least 10 characters");
+            throw new Error("password too short");
+          }
+          await applyUser(
+            () =>
+              usersApi.resetPassword(
+                passwordTarget.id,
+                newPassword,
+                reason ?? "Reset from portal settings",
+              ),
+            (list) => list,
+            { success: "Password reset", description: `${passwordTarget.name} has been signed out.` },
+          );
+          setNewPassword("");
+        }}
+      />
 
       <ConfirmDialog
         open={revokeOpen}

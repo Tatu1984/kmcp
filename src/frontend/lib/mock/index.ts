@@ -33,8 +33,8 @@ export const DASHBOARD = {
     .filter((p) => p.mode === "UPI_QR" || p.mode === "UPI_INTENT")
     .reduce((s, p) => s + p.amount, 0),
 
-  vendorCollection: VENDORS.reduce((s, v) => s + v.revenueMonth, 0),
-  pendingVendorPayments: VENDORS.reduce((s, v) => s + v.pendingSettlement, 0),
+  vendorCollection: VENDORS.reduce((s, v) => s + (v.revenueMonth ?? 0), 0),
+  pendingVendorPayments: VENDORS.reduce((s, v) => s + (v.pendingSettlement ?? 0), 0),
 
   sessionsToday: SESSIONS.length,
   overstayCount: SESSIONS.filter((s) => s.isOverstay).length,

@@ -1,6 +1,22 @@
-import type { ApiZone } from "@/frontend/api";
-import type { ApiSlot, ApiAttendant, ApiUser } from "@/frontend/api/endpoints/master.api";
-import type { Zone, Slot, Attendant, User } from "@/shared/types/domain.types";
+import type { ApiZone, ApiVendor } from "@/frontend/api";
+import type {
+  ApiSlot,
+  ApiAttendant,
+  ApiUser,
+  ApiCmsPage,
+  ApiFaq,
+  ApiBanner,
+} from "@/frontend/api/endpoints/master.api";
+import type {
+  Zone,
+  Slot,
+  Attendant,
+  User,
+  Vendor,
+  CmsPage,
+  Faq,
+  Banner,
+} from "@/shared/types/domain.types";
 
 /**
  * Translates what the API returns into the shapes the screens render.
@@ -86,5 +102,74 @@ export function toUser(user: ApiUser): User {
     lastLoginAt: user.lastLoginAt ?? undefined,
     createdAt: user.createdAt,
     twoFactorEnabled: user.twoFactorEnabled,
+  };
+}
+
+export function toVendor(vendor: ApiVendor): Vendor {
+  return {
+    id: vendor.id,
+    orgName: vendor.orgName,
+    contactName: vendor.contactName,
+    contactPhone: vendor.contactPhone,
+    email: vendor.user?.email ?? "",
+    gstin: vendor.gstin ?? undefined,
+    pan: vendor.pan ?? undefined,
+    bankAccountNo: vendor.bankAccountNo ?? undefined,
+    bankIfsc: vendor.bankIfsc ?? undefined,
+    // Prisma Decimal arrives as a string; every arithmetic use needs the number.
+    commissionPct: Number(vendor.commissionPct ?? 0),
+    rating: vendor.rating ? Number(vendor.rating) : undefined,
+    status: vendor.status,
+    zoneCount: vendor.zoneCount ?? vendor._count?.zones ?? 0,
+    attendantCount: vendor.attendantCount ?? vendor._count?.attendants ?? 0,
+    // Both are settlement figures, and settlement is not built yet.
+    revenueMonth: undefined,
+    pendingSettlement: undefined,
+    kycComplete: vendor.kycComplete ?? false,
+    documents: (vendor.documents ?? []).map((doc) => ({
+      id: doc.id,
+      type: doc.type,
+      fileName: doc.type,
+      mediaId: doc.mediaId,
+      verified: Boolean(doc.verifiedAt),
+      uploadedAt: doc.createdAt,
+    })),
+    approvedAt: vendor.approvedAt ?? undefined,
+    createdAt: vendor.createdAt,
+  };
+}
+
+export function toCmsPage(page: ApiCmsPage): CmsPage {
+  return {
+    slug: page.slug,
+    title: page.title,
+    updatedAt: page.updatedAt,
+    published: Boolean(page.publishedAt),
+    // The list screen shows a length; the body is markup, so count text words.
+    words: page.bodyHtml
+      ? page.bodyHtml.replace(/<[^>]*>/g, " ").split(/\s+/).filter(Boolean).length
+      : 0,
+  };
+}
+
+export function toFaq(faq: ApiFaq): Faq {
+  return {
+    id: faq.id,
+    question: faq.question,
+    answer: faq.answer,
+    category: faq.category ?? "General",
+    isActive: faq.isActive,
+  };
+}
+
+export function toBanner(banner: ApiBanner): Banner {
+  return {
+    id: banner.id,
+    title: banner.title,
+    body: banner.body ?? "",
+    audience: banner.audience,
+    startAt: banner.startAt,
+    endAt: banner.endAt,
+    isActive: banner.isActive,
   };
 }

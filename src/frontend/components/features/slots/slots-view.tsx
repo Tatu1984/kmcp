@@ -47,6 +47,9 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Plate, SectionCard } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SLOTS, ZONES } from "@/frontend/lib/mock";
+import { slotsApi, zonesApi } from "@/frontend/api";
+import { useResource } from "@/frontend/hooks/use-api";
+import { toSlot } from "@/frontend/lib/adapters";
 import { ROUTES } from "@/shared/constants/routes";
 import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
 import { cn } from "@/lib/utils";
@@ -62,28 +65,54 @@ export function SlotsView() {
   const params = useSearchParams();
   const zoneParam = params.get("zone");
 
-  const [slots, setSlots] = React.useState<Slot[]>(SLOTS);
+  const { items: zones } = useResource<{ id: string; code: string; name: string }>(
+    ["zones", "picker"],
+    () =>
+      zonesApi
+        .list({ pageSize: 200 })
+        .then((r) => r.data.map((z) => ({ id: z.id, code: z.code, name: z.name }))),
+    ZONES.map((z) => ({ id: z.id, code: z.code, name: z.name })),
+  );
+
+  const {
+    items: slots,
+    isLoading,
+    emptyReason,
+    apply,
+  } = useResource<Slot>(
+    ["slots", "list"],
+    () => slotsApi.list({ pageSize: 500 }).then((r) => r.data.map(toSlot)),
+    SLOTS,
+  );
   const [zoneId, setZoneId] = React.useState(zoneParam ?? "__all");
   const [bulkOpen, setBulkOpen] = React.useState(false);
   const [removeOpen, setRemoveOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<Slot | null>(null);
+  const [bulk, setBulk] = React.useState({ zoneId: "", type: "CAR" as SlotType, prefix: "C", count: 20 });
 
   const data = React.useMemo(
     () => (zoneId === "__all" ? slots : slots.filter((s) => s.zoneId === zoneId)),
     [slots, zoneId],
   );
 
-  const setStatus = (slot: Slot, status: SlotStatus, label: string) => {
-    setSlots((list) => list.map((s) => (s.id === slot.id ? { ...s, status } : s)));
-    toast.success(`Bay ${slot.code} marked ${label}`, {
-      description: slot.zoneName,
-      action: {
-        label: "Undo",
-        onClick: () =>
-          setSlots((list) => list.map((s) => (s.id === slot.id ? { ...s, status: slot.status } : s))),
-      },
-    });
-  };
+  const setStatus = React.useCallback(
+    (slot: Slot, status: SlotStatus, label: string) => {
+      void apply(
+        () =>
+          slotsApi.changeStatus(
+            slot.id,
+            status,
+            // The API insists on a reason before a bay leaves service, and it
+            // is right to: an unexplained blocked bay is lost revenue nobody
+            // can account for later.
+            status === "OUT_OF_SERVICE" ? `Marked ${label} from the portal` : undefined,
+          ),
+        (list) => list.map((s) => (s.id === slot.id ? { ...s, status } : s)),
+        { success: `Bay ${slot.code} marked ${label}`, description: slot.zoneName },
+      ).catch(() => undefined);
+    },
+    [apply],
+  );
 
   const columns = React.useMemo<ColumnDef<Slot, unknown>[]>(
     () => [
@@ -168,10 +197,12 @@ export function SlotsView() {
                     icon: Grid3x3,
                     children: (["CAR", "TWO_WHEELER", "EV", "VIP", "ACCESSIBLE"] as SlotType[]).map((t) => ({
                       label: VEHICLE_TYPE_LABELS[t],
-                      onSelect: () => {
-                        setSlots((list) => list.map((s) => (s.id === slot.id ? { ...s, type: t } : s)));
-                        toast.success(`Bay ${slot.code} is now a ${VEHICLE_TYPE_LABELS[t]} bay`);
-                      },
+                      onSelect: () =>
+                        void apply(
+                          () => slotsApi.update(slot.id, { type: t }),
+                          (list) => list.map((s) => (s.id === slot.id ? { ...s, type: t } : s)),
+                          { success: `Bay ${slot.code} is now a ${VEHICLE_TYPE_LABELS[t]} bay` },
+                        ).catch(() => undefined),
                     })),
                   },
                   {
@@ -196,7 +227,7 @@ export function SlotsView() {
         },
       },
     ],
-    [],
+    [apply, setStatus],
   );
 
   const counts = {
@@ -338,13 +369,23 @@ export function SlotsView() {
                   size="sm"
                   variant="outline"
                   className="h-7"
-                  onClick={() => {
-                    setSlots((list) =>
-                      list.map((s) => (rows.some((r) => r.id === s.id) ? { ...s, status: "OUT_OF_SERVICE" } : s)),
-                    );
-                    toast.success(`${rows.length} bays taken out of service`);
-                    clear();
-                  }}
+                  onClick={() =>
+                    void apply(
+                      () =>
+                        Promise.all(
+                          rows.map((s) =>
+                            slotsApi.changeStatus(s.id, "OUT_OF_SERVICE", "Bulk action from the portal"),
+                          ),
+                        ),
+                      (list) =>
+                        list.map((s) =>
+                          rows.some((r) => r.id === s.id) ? { ...s, status: "OUT_OF_SERVICE" as const } : s,
+                        ),
+                      { success: `${rows.length} bays taken out of service` },
+                    )
+                      .then(clear)
+                      .catch(() => undefined)
+                  }
                 >
                   Take out of service
                 </Button>
@@ -352,19 +393,25 @@ export function SlotsView() {
                   size="sm"
                   variant="outline"
                   className="h-7"
-                  onClick={() => {
-                    setSlots((list) =>
-                      list.map((s) => (rows.some((r) => r.id === s.id) ? { ...s, status: "AVAILABLE" } : s)),
-                    );
-                    toast.success(`${rows.length} bays returned to service`);
-                    clear();
-                  }}
+                  onClick={() =>
+                    void apply(
+                      () => Promise.all(rows.map((s) => slotsApi.changeStatus(s.id, "AVAILABLE"))),
+                      (list) =>
+                        list.map((s) =>
+                          rows.some((r) => r.id === s.id) ? { ...s, status: "AVAILABLE" as const } : s,
+                        ),
+                      { success: `${rows.length} bays returned to service` },
+                    )
+                      .then(clear)
+                      .catch(() => undefined)
+                  }
                 >
                   Return to service
                 </Button>
               </>
             )}
-            emptyTitle="No bays configured"
+            isLoading={isLoading}
+            emptyTitle={emptyReason ? "Nothing to show" : "No bays configured"}
             emptyDescription="Add bays to this zone so attendants can assign vehicles to a specific space."
           />
         </TabsContent>
@@ -384,12 +431,15 @@ export function SlotsView() {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="bulk-zone">Zone</Label>
-              <Select defaultValue={zoneId === "__all" ? ZONES[0].id : zoneId}>
+              <Select
+                value={bulk.zoneId || (zoneId === "__all" ? (zones[0]?.id ?? "") : zoneId)}
+                onValueChange={(v) => setBulk((b) => ({ ...b, zoneId: v }))}
+              >
                 <SelectTrigger id="bulk-zone">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {ZONES.map((z) => (
+                  {zones.map((z) => (
                     <SelectItem key={z.id} value={z.id}>
                       {z.code} · {z.name}
                     </SelectItem>
@@ -399,7 +449,10 @@ export function SlotsView() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="bulk-type">Bay type</Label>
-              <Select defaultValue="CAR">
+              <Select
+                value={bulk.type}
+                onValueChange={(v) => setBulk((b) => ({ ...b, type: v as SlotType }))}
+              >
                 <SelectTrigger id="bulk-type">
                   <SelectValue />
                 </SelectTrigger>
@@ -414,11 +467,24 @@ export function SlotsView() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="bulk-prefix">Code prefix</Label>
-              <Input id="bulk-prefix" defaultValue="C" className="font-mono" maxLength={2} />
+              <Input
+                id="bulk-prefix"
+                value={bulk.prefix}
+                onChange={(e) => setBulk((b) => ({ ...b, prefix: e.target.value.toUpperCase() }))}
+                className="font-mono"
+                maxLength={2}
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="bulk-count">How many</Label>
-              <Input id="bulk-count" type="number" defaultValue={20} min={1} max={200} />
+              <Input
+                id="bulk-count"
+                type="number"
+                value={bulk.count}
+                onChange={(e) => setBulk((b) => ({ ...b, count: Number(e.target.value) }))}
+                min={1}
+                max={200}
+              />
             </div>
           </div>
 
@@ -428,10 +494,40 @@ export function SlotsView() {
             </Button>
             <Button
               onClick={() => {
-                setBulkOpen(false);
-                toast.success("20 bays created", {
-                  description: "C01–C20 added and available for allocation.",
-                });
+                const targetZone = bulk.zoneId || (zoneId === "__all" ? zones[0]?.id : zoneId);
+                if (!targetZone) {
+                  toast.error("Pick a zone for these bays");
+                  return;
+                }
+                void apply(
+                  () =>
+                    slotsApi.bulkCreate({
+                      zoneId: targetZone,
+                      prefix: bulk.prefix,
+                      from: 1,
+                      to: bulk.count,
+                      type: bulk.type,
+                    }),
+                  // The demo path numbers the run the same way the server does.
+                  (list) => [
+                    ...Array.from({ length: bulk.count }).map((_, i) => ({
+                      id: `slt_new_${targetZone}_${bulk.prefix}${i + 1}`,
+                      zoneId: targetZone,
+                      zoneName: zones.find((z) => z.id === targetZone)?.name ?? "—",
+                      code: `${bulk.prefix}${String(i + 1).padStart(3, "0")}`,
+                      type: bulk.type,
+                      status: "AVAILABLE" as const,
+                      isReserved: false,
+                    })),
+                    ...list,
+                  ],
+                  {
+                    success: `${bulk.count} bays created`,
+                    description: `${bulk.prefix}001–${bulk.prefix}${String(bulk.count).padStart(3, "0")} added.`,
+                  },
+                )
+                  .then(() => setBulkOpen(false))
+                  .catch(() => undefined);
               }}
             >
               Create bays
@@ -447,9 +543,13 @@ export function SlotsView() {
         destructive
         confirmLabel="Remove bay"
         description="The bay disappears from the map and can no longer be assigned. Historic sessions that referenced it are unaffected."
-        onConfirm={() => {
-          setSlots((list) => list.filter((s) => s.id !== selected?.id));
-          toast.success("Bay removed", { description: `${selected?.code} · ${selected?.zoneName}` });
+        onConfirm={async () => {
+          if (!selected) return;
+          await apply(
+            () => slotsApi.remove(selected.id),
+            (list) => list.filter((s) => s.id !== selected.id),
+            { success: "Bay removed", description: `${selected.code} · ${selected.zoneName}` },
+          );
         }}
       />
 

@@ -22,6 +22,21 @@ export interface ApiVendor {
   createdAt: string;
   zoneCount?: number;
   attendantCount?: number;
+  /** Computed server-side: every required document verified. */
+  kycComplete?: boolean;
+  missingDocuments?: string[];
+  user?: { id: string; email?: string | null; status: string; lastLoginAt?: string | null } | null;
+  documents?: ApiVendorDocument[];
+  _count?: { zones: number; attendants: number };
+}
+
+export interface ApiVendorDocument {
+  id: string;
+  type: string;
+  mediaId: string;
+  verifiedBy?: string | null;
+  verifiedAt?: string | null;
+  createdAt: string;
 }
 
 export const vendorsApi = {
