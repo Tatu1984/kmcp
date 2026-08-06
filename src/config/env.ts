@@ -44,6 +44,18 @@ const serverSchema = z.object({
 });
 
 const clientSchema = z.object({
+  /**
+   * Absolute base URL of the KMCP API, including the version prefix.
+   * e.g. https://kmcp-backend.vercel.app/api/v1
+   *
+   * Left unset the portal runs on its bundled mock dataset, which is how the
+   * demo works before the backend is reachable.
+   */
+  NEXT_PUBLIC_API_URL: z
+    .string()
+    .url("NEXT_PUBLIC_API_URL must be an absolute URL")
+    .optional()
+    .transform((v) => v?.replace(/\/+$/, "")),
   NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: z.string().optional(),
 });
 
@@ -64,5 +76,11 @@ export function serverEnv(): ServerEnv {
 }
 
 export const clientEnv: ClientEnv = clientSchema.parse({
+  // Next.js inlines NEXT_PUBLIC_* at build time, so these must be referenced
+  // as literal property accesses rather than looked up dynamically.
+  NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
   NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: process.env.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY,
 });
+
+/** True when the portal is pointed at a live backend rather than mock data. */
+export const isLiveApi = Boolean(clientEnv.NEXT_PUBLIC_API_URL);

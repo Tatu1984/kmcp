@@ -32,6 +32,7 @@ export const ROUTES = {
   audit: "/audit",
   cms: "/cms",
   settings: "/settings",
+  connection: "/settings/connection",
 } as const;
 
 export const API = {
