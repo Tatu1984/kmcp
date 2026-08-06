@@ -15,3 +15,19 @@ export type {
   ActivityOverview,
   LiveSession,
 } from "./endpoints/audit.api";
+export { geographyApi } from "./endpoints/geography.api";
+export type { ApiWard, ApiStreet } from "./endpoints/geography.api";
+export { vendorsApi } from "./endpoints/vendors.api";
+export type { ApiVendor } from "./endpoints/vendors.api";
+export { vehicleTypesApi, slotsApi, attendantsApi, usersApi, settingsApi } from "./endpoints/master.api";
+export type {
+  ApiVehicleType,
+  ApiSlot,
+  SlotSummary,
+  ApiAttendant,
+  ApiUser,
+  ConfigEntry,
+  ApiCmsPage,
+  ApiFaq,
+  ApiBanner,
+} from "./endpoints/master.api";

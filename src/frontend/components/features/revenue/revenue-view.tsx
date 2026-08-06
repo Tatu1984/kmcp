@@ -74,7 +74,7 @@ export function RevenueView() {
       }));
   }, []);
 
-  const zoneRevenue = [...ZONES].sort((a, b) => b.revenueMonth - a.revenueMonth);
+  const zoneRevenue = [...ZONES].sort((a, b) => (b.revenueMonth ?? 0) - (a.revenueMonth ?? 0));
   const maxZoneRevenue = zoneRevenue[0]?.revenueMonth ?? 1;
   const vendorRevenue = [...VENDORS]
     .filter((v) => v.revenueMonth > 0)
@@ -236,14 +236,14 @@ export function RevenueView() {
                       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                         <div
                           className="h-full rounded-full bg-chart-1"
-                          style={{ width: `${(zone.revenueMonth / maxZoneRevenue) * 100}%` }}
+                          style={{ width: `${((zone.revenueMonth ?? 0) / maxZoneRevenue) * 100}%` }}
                         />
                       </div>
                     </div>
                     <div className="w-24 text-right">
                       <Money value={zone.revenueMonth} className="text-sm font-medium" />
                       <p className="text-[11px] text-muted-foreground">
-                        {percent(zone.revenueMonth, totalVendorRevenue)}% of total
+                        {percent(zone.revenueMonth ?? 0, totalVendorRevenue)}% of total
                       </p>
                     </div>
                   </Link>

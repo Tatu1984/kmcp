@@ -23,9 +23,9 @@ export const DASHBOARD = {
   availableSlots: TOTAL_CAPACITY - TOTAL_OCCUPIED,
   occupancyPct: Math.round((TOTAL_OCCUPIED / TOTAL_CAPACITY) * 100),
 
-  revenueToday: ZONES.reduce((s, z) => s + z.revenueToday, 0),
-  revenueMonth: ZONES.reduce((s, z) => s + z.revenueMonth, 0),
-  revenueYesterday: Math.round(ZONES.reduce((s, z) => s + z.revenueToday, 0) * 0.91),
+  revenueToday: ZONES.reduce((s, z) => s + (z.revenueToday ?? 0), 0),
+  revenueMonth: ZONES.reduce((s, z) => s + (z.revenueMonth ?? 0), 0),
+  revenueYesterday: Math.round(ZONES.reduce((s, z) => s + (z.revenueToday ?? 0), 0) * 0.91),
 
   cashCollection: cash.reduce((s, p) => s + p.amount, 0),
   digitalCollection: digital.reduce((s, p) => s + p.amount, 0),
@@ -53,7 +53,7 @@ export const DASHBOARD = {
 };
 
 export const TOP_ZONES = [...ZONES]
-  .sort((a, b) => b.revenueToday - a.revenueToday)
+  .sort((a, b) => (b.revenueToday ?? 0) - (a.revenueToday ?? 0))
   .slice(0, 6);
 
 export const LOW_OCCUPANCY_ZONES = [...ZONES]

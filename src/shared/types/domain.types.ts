@@ -95,9 +95,14 @@ export interface Zone {
   closureUntil?: string;
   vendorId?: string;
   vendorName?: string;
-  revenueToday: Paise;
-  revenueMonth: Paise;
-  slotCount: number;
+  /**
+   * Absent until a source of truth exists for it. Zone revenue is computed from
+   * captured payments, which arrive with the payments module — rendering ₹0
+   * before then would assert "no revenue" rather than "not yet known".
+   */
+  revenueToday?: Paise;
+  revenueMonth?: Paise;
+  slotCount?: number;
   boundaryPoints: number;
   createdAt: string;
 }
@@ -147,9 +152,11 @@ export interface Attendant {
   zoneName?: string;
   isActive: boolean;
   onShift: boolean;
-  deviceBound: boolean;
-  sessionsToday: number;
-  collectionToday: Paise;
+  /** Reported by the attendant detail endpoint, not the list. */
+  deviceBound?: boolean;
+  /** Session and collection totals arrive with the sessions and payments work. */
+  sessionsToday?: number;
+  collectionToday?: Paise;
   rating?: number;
   createdAt: string;
 }

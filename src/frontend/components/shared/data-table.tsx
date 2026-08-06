@@ -61,6 +61,7 @@ import {
   SelectValue,
 } from "@/frontend/components/ui/select";
 import { EmptyState } from "./empty-state";
+import { Skeleton } from "@/frontend/components/ui/skeleton";
 import { PAGE_SIZES, DEFAULT_PAGE_SIZE } from "@/config/app.config";
 
 export type FacetFilter = {
@@ -85,6 +86,8 @@ export type DataTableProps<T> = {
   emptyTitle?: string;
   emptyDescription?: string;
   emptyAction?: React.ReactNode;
+  /** Shows placeholder rows instead of an empty state while the first load runs. */
+  isLoading?: boolean;
   onExport?: (rows: T[]) => void;
   initialPageSize?: number;
   stickyHeader?: boolean;
@@ -104,6 +107,7 @@ export function DataTable<T extends object>({
   emptyTitle = "Nothing here yet",
   emptyDescription = "Once there is data it will show up in this table.",
   emptyAction,
+  isLoading = false,
   onExport,
   initialPageSize = DEFAULT_PAGE_SIZE,
   stickyHeader = true,
@@ -348,7 +352,19 @@ export function DataTable<T extends object>({
             </TableHeader>
 
             <TableBody>
-              {table.getRowModel().rows.length === 0 ? (
+              {isLoading && table.getRowModel().rows.length === 0 ? (
+                // Placeholder rows, not an empty state: "no zones" and "not
+                // loaded yet" mean different things and must not look alike.
+                Array.from({ length: 5 }).map((_, i) => (
+                  <TableRow key={`skeleton-${i}`} className="hover:bg-transparent">
+                    {allColumns.map((column, c) => (
+                      <TableCell key={`${column.id ?? c}`} className="py-3">
+                        <Skeleton className="h-4 w-full max-w-40" />
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              ) : table.getRowModel().rows.length === 0 ? (
                 <TableRow className="hover:bg-transparent">
                   <TableCell colSpan={allColumns.length} className="h-64 p-0">
                     <EmptyState

@@ -264,9 +264,9 @@ export function AttendantsView() {
         <FadeStaggerItem>
           <StatCard
             label="Collected today"
-            value={<Money value={attendants.reduce((s, a) => s + a.collectionToday, 0)} compact />}
+            value={<Money value={attendants.reduce((s, a) => s + (a.collectionToday ?? 0), 0)} compact />}
             icon={ChartNoAxesColumn}
-            hint={`${attendants.reduce((s, a) => s + a.sessionsToday, 0)} sessions started`}
+            hint={`${attendants.reduce((s, a) => s + (a.sessionsToday ?? 0), 0)} sessions started`}
           />
         </FadeStaggerItem>
         <FadeStaggerItem>

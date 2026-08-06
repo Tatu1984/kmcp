@@ -1,6 +1,8 @@
 "use client";
 
+import * as React from "react";
 import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { ApiError } from "@/frontend/api";
 import { isLiveApi } from "@/config/env";
 
@@ -25,6 +27,70 @@ export function useApiQuery<T>(
     },
     ...options,
   });
+}
+
+/**
+ * One list of records, from the API when there is one and from the bundled demo
+ * dataset when there is not.
+ *
+ * Both modes have to keep working: the portal is demonstrated to the authority
+ * on a laptop with no backend, and runs against the real API in the field. Every
+ * screen would otherwise grow its own copy of that branch, so it lives here.
+ *
+ * `apply` is the write path. Against the API it performs the call and refetches;
+ * in demo mode it edits the local copy so the walkthrough still behaves like a
+ * working system. Errors surface as a toast and are re-thrown, so a caller can
+ * keep a dialog open on failure.
+ */
+export function useResource<T>(
+  key: readonly unknown[],
+  fetcher: () => Promise<T[]>,
+  demoData: T[],
+  options?: { enabled?: boolean },
+) {
+  const query = useApiQuery<T[]>(key, fetcher, { enabled: options?.enabled });
+  const [demo, setDemo] = React.useState<T[]>(demoData);
+  const [busy, setBusy] = React.useState(false);
+
+  const items = isLiveApi ? (query.data ?? []) : demo;
+
+  const apply = React.useCallback(
+    async (
+      live: () => Promise<unknown>,
+      demoUpdate: (current: T[]) => T[],
+      messages?: { success?: string; description?: string },
+    ) => {
+      if (!isLiveApi) {
+        setDemo(demoUpdate);
+        if (messages?.success) toast.success(messages.success, { description: messages.description });
+        return;
+      }
+      setBusy(true);
+      try {
+        await live();
+        await query.refetch();
+        if (messages?.success) toast.success(messages.success, { description: messages.description });
+      } catch (error) {
+        toast.error(
+          error instanceof ApiError ? error.message : "That did not go through. Please try again.",
+        );
+        throw error;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [query],
+  );
+
+  return {
+    items,
+    isLoading: isLiveApi && query.isLoading,
+    isBusy: busy,
+    error: query.error ?? null,
+    emptyReason: emptyReason(query.error ?? null, query.isLoading),
+    refresh: query.refetch,
+    apply,
+  };
 }
 
 /** Human-readable reason a screen has no data, or null when it does. */

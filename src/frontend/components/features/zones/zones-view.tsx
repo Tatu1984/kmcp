@@ -31,14 +31,64 @@ import { Money, OccupancyBar } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { ZoneFormSheet } from "./zone-form-sheet";
 import { ZoneStatusDialog } from "./zone-status-dialog";
-import { ZONES, WARDS, VENDORS, DASHBOARD } from "@/frontend/lib/mock";
+import { ZONES, VENDORS, DASHBOARD } from "@/frontend/lib/mock";
+import { zonesApi, vendorsApi } from "@/frontend/api";
+import { useResource } from "@/frontend/hooks/use-api";
+import { toZone } from "@/frontend/lib/adapters";
 import { ROUTES } from "@/shared/constants/routes";
 import { percent } from "@/shared/utils/common.util";
 import type { Zone } from "@/shared/types/domain.types";
 
+/**
+ * The form edits the shape the table renders; the API takes the normalised one.
+ * Only defined fields are sent, so a partial edit stays a partial update rather
+ * than blanking whatever the form did not touch.
+ */
+function toZonePayload(draft: Partial<Zone>): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  const put = (key: string, value: unknown) => {
+    if (value !== undefined && value !== "") payload[key] = value;
+  };
+
+  put("code", draft.code);
+  put("name", draft.name);
+  put("wardId", draft.wardId);
+  put("capacity", draft.capacity);
+  put("openTime", draft.openTime);
+  put("closeTime", draft.closeTime);
+  put("allowedVehicleTypeIds", draft.allowedVehicleTypes);
+  put("vendorId", draft.vendorId);
+  if (draft.center) {
+    payload.centerLat = draft.center.lat;
+    payload.centerLng = draft.center.lng;
+  }
+  return payload;
+}
+
 export function ZonesView() {
   const router = useRouter();
-  const [zones, setZones] = React.useState<Zone[]>(ZONES);
+
+  const {
+    items: zones,
+    isLoading,
+    emptyReason,
+    apply,
+  } = useResource<Zone>(
+    ["zones", "list"],
+    () => zonesApi.list({ pageSize: 200 }).then((r) => r.data.map(toZone)),
+    ZONES,
+  );
+
+  // The assign-vendor menu offers whoever the API says is approved, falling
+  // back to the demo roster when no backend is configured.
+  const { items: vendors } = useResource<{ id: string; orgName: string }>(
+    ["vendors", "approved"],
+    () =>
+      vendorsApi
+        .list({ status: "APPROVED", pageSize: 100 })
+        .then((r) => r.data.map((v) => ({ id: v.id, orgName: v.orgName }))),
+    VENDORS.filter((v) => v.status === "APPROVED").map((v) => ({ id: v.id, orgName: v.orgName })),
+  );
   const [formOpen, setFormOpen] = React.useState(false);
   const [statusOpen, setStatusOpen] = React.useState(false);
   const [retireOpen, setRetireOpen] = React.useState(false);
@@ -173,29 +223,17 @@ export function ZonesView() {
                   {
                     label: "Assign vendor",
                     icon: Building2,
-                    children: VENDORS.filter((v) => v.status === "APPROVED").map((v) => ({
+                    children: vendors.map((v) => ({
                       label: v.orgName,
-                      onSelect: () => {
-                        setZones((list) =>
-                          list.map((z) =>
-                            z.id === zone.id ? { ...z, vendorId: v.id, vendorName: v.orgName } : z,
-                          ),
-                        );
-                        toast.success("Vendor assigned", {
-                          description: `${zone.name} → ${v.orgName}`,
-                          action: {
-                            label: "Undo",
-                            onClick: () =>
-                              setZones((list) =>
-                                list.map((z) =>
-                                  z.id === zone.id
-                                    ? { ...z, vendorId: zone.vendorId, vendorName: zone.vendorName }
-                                    : z,
-                                ),
-                              ),
-                          },
-                        });
-                      },
+                      onSelect: () =>
+                        void apply(
+                          () => zonesApi.assignVendor(zone.id, v.id),
+                          (list) =>
+                            list.map((z) =>
+                              z.id === zone.id ? { ...z, vendorId: v.id, vendorName: v.orgName } : z,
+                            ),
+                          { success: "Vendor assigned", description: `${zone.name} → ${v.orgName}` },
+                        ).catch(() => undefined),
                     })),
                   },
                   {
@@ -229,7 +267,7 @@ export function ZonesView() {
         },
       },
     ],
-    [router],
+    [router, apply, vendors],
   );
 
   const closedCount = zones.filter((z) => z.status !== "OPEN").length;
@@ -329,12 +367,28 @@ export function ZonesView() {
               size="sm"
               variant="outline"
               className="h-7"
-              onClick={() => {
-                toast.success(`${rows.length} zones closed for maintenance`, {
-                  description: "Citizens now see a closure notice for these zones.",
-                });
-                clear();
-              }}
+              onClick={() =>
+                void apply(
+                  () =>
+                    Promise.all(
+                      rows.map((z) =>
+                        zonesApi.changeStatus(z.id, "MAINTENANCE", "Closed for maintenance"),
+                      ),
+                    ),
+                  (list) =>
+                    list.map((z) =>
+                      rows.some((r) => r.id === z.id)
+                        ? { ...z, status: "MAINTENANCE" as const, closureReason: "Closed for maintenance" }
+                        : z,
+                    ),
+                  {
+                    success: `${rows.length} zones closed for maintenance`,
+                    description: "Citizens now see a closure notice for these zones.",
+                  },
+                )
+                  .then(clear)
+                  .catch(() => undefined)
+              }
             >
               Close for maintenance
             </Button>
@@ -342,10 +396,20 @@ export function ZonesView() {
               size="sm"
               variant="outline"
               className="h-7"
-              onClick={() => {
-                toast.success(`${rows.length} zones reopened`);
-                clear();
-              }}
+              onClick={() =>
+                void apply(
+                  () => Promise.all(rows.map((z) => zonesApi.changeStatus(z.id, "OPEN"))),
+                  (list) =>
+                    list.map((z) =>
+                      rows.some((r) => r.id === z.id)
+                        ? { ...z, status: "OPEN" as const, closureReason: undefined }
+                        : z,
+                    ),
+                  { success: `${rows.length} zones reopened` },
+                )
+                  .then(clear)
+                  .catch(() => undefined)
+              }
             >
               Reopen
             </Button>
@@ -363,8 +427,11 @@ export function ZonesView() {
             </Button>
           </>
         )}
-        emptyTitle="No zones yet"
-        emptyDescription="Create your first parking zone to start recording sessions at the kerb."
+        isLoading={isLoading}
+        emptyTitle={emptyReason ? "Nothing to show" : "No zones yet"}
+        emptyDescription={
+          emptyReason ?? "Create your first parking zone to start recording sessions at the kerb."
+        }
         emptyAction={
           <Button size="sm" onClick={openCreate}>
             <Plus className="size-4" /> New zone
@@ -376,45 +443,46 @@ export function ZonesView() {
         open={formOpen}
         onOpenChange={setFormOpen}
         zone={selected}
-        onSaved={(draft) => {
-          if (selected) {
-            setZones((list) =>
-              list.map((z) => (z.id === selected.id ? { ...z, ...draft } as Zone : z)),
-            );
-          } else {
-            const ward = WARDS.find((w) => w.id === draft.wardId);
-            setZones((list) => [
-              {
-                ...(draft as Zone),
-                id: `zn_new_${list.length + 1}`,
-                wardName: ward?.name ?? "—",
-                occupied: 0,
-                status: "OPEN",
-                revenueToday: 0,
-                revenueMonth: 0,
-                slotCount: draft.capacity ?? 0,
-                createdAt: new Date().toISOString(),
-                center: { lat: 22.5726, lng: 88.3639 },
-              },
-              ...list,
-            ]);
-          }
-        }}
+        onSaved={(draft) =>
+          apply(
+            () =>
+              selected
+                ? zonesApi.update(selected.id, toZonePayload(draft))
+                : zonesApi.create(toZonePayload(draft)),
+            (list) =>
+              selected
+                ? list.map((z) => (z.id === selected.id ? ({ ...z, ...draft } as Zone) : z))
+                : [
+                    {
+                      ...(draft as Zone),
+                      id: `zn_new_${list.length + 1}`,
+                      wardName: draft.wardName ?? "—",
+                      occupied: 0,
+                      status: "OPEN",
+                      createdAt: new Date().toISOString(),
+                      center: draft.center ?? { lat: 22.5726, lng: 88.3639 },
+                    },
+                    ...list,
+                  ],
+            { success: selected ? "Zone updated" : "Zone created", description: draft.name },
+          )
+        }
       />
 
       <ZoneStatusDialog
         open={statusOpen}
         onOpenChange={setStatusOpen}
         zone={selected}
-        onChanged={(status, reason, until) =>
-          setZones((list) =>
-            list.map((z) =>
-              z.id === selected?.id
-                ? { ...z, status, closureReason: reason, closureUntil: until }
-                : z,
-            ),
-          )
-        }
+        onChanged={(status, reason, until) => {
+          if (!selected) return;
+          void apply(
+            () => zonesApi.changeStatus(selected.id, status, reason, until),
+            (list) =>
+              list.map((z) =>
+                z.id === selected.id ? { ...z, status, closureReason: reason, closureUntil: until } : z,
+              ),
+          ).catch(() => undefined);
+        }}
       />
 
       <ConfirmDialog
@@ -443,15 +511,19 @@ export function ZonesView() {
             )}
           </div>
         }
-        onConfirm={(reason) => {
-          setZones((list) =>
-            list.map((z) =>
-              z.id === selected?.id ? { ...z, status: "CLOSED", closureReason: reason } : z,
-            ),
+        onConfirm={async (reason) => {
+          if (!selected) return;
+          await apply(
+            () => zonesApi.retire(selected.id, reason ?? "Retired from the portal"),
+            (list) =>
+              list.map((z) =>
+                z.id === selected.id ? { ...z, status: "CLOSED", closureReason: reason } : z,
+              ),
+            {
+              success: "Zone retired",
+              description: `${selected.name} is withdrawn from service. Written to the audit trail.`,
+            },
           );
-          toast.success("Zone retired", {
-            description: `${selected?.name} is withdrawn from service. Written to the audit trail.`,
-          });
         }}
       />
     </div>

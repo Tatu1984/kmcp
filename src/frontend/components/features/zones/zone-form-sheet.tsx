@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, MapPin, Save, Trash2 } from "lucide-react";
+import { Loader2, Save, Trash2 } from "lucide-react";
+import { LocationPicker } from "@/frontend/components/shared/map";
 import { toast } from "sonner";
 import { Button } from "@/frontend/components/ui/button";
 import { Input } from "@/frontend/components/ui/input";
@@ -53,7 +54,7 @@ export function ZoneFormSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   zone?: Zone | null;
-  onSaved?: (zone: Partial<Zone>) => void;
+  onSaved?: (zone: Partial<Zone>) => void | Promise<void>;
 }) {
   const editing = Boolean(zone);
   const [busy, setBusy] = React.useState(false);
@@ -85,15 +86,22 @@ export function ZoneFormSheet({
       toast.error("Pick at least one vehicle type this zone accepts");
       return;
     }
+    const lat = Number(form.lat);
+    const lng = Number(form.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      toast.error("Place the zone on the map before saving");
+      return;
+    }
+
     setBusy(true);
-    await new Promise((r) => setTimeout(r, 700));
-    setBusy(false);
-    onOpenChange(false);
-    onSaved?.(form as Partial<Zone>);
-    toast.success(editing ? "Zone updated" : "Zone created", {
-      description: `${form.code} · ${form.name} — ${form.capacity} bays`,
-      action: { label: "View", onClick: () => undefined },
-    });
+    try {
+      // The caller owns the write and reports success or failure — this sheet
+      // only closes once the save has actually gone through.
+      await onSaved?.({ ...form, center: { lat, lng } } as Partial<Zone>);
+      onOpenChange(false);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -301,34 +309,25 @@ export function ZoneFormSheet({
 
           {/* ------------------------------------------------------ geofence */}
           <TabsContent value="geofence" className="mt-4 space-y-4">
-            <div className="relative grid h-52 place-items-center overflow-hidden rounded-lg border bg-muted/30">
-              <div className="absolute inset-0 kmcp-grid-bg opacity-40" />
-              <svg viewBox="0 0 320 160" className="absolute inset-0 size-full" aria-hidden>
-                <polygon
-                  points="60,30 240,26 268,84 210,132 92,138 44,88"
-                  className="fill-primary/12 stroke-primary"
-                  strokeWidth="2"
-                  strokeDasharray="5 4"
-                />
-                {[
-                  [60, 30],
-                  [240, 26],
-                  [268, 84],
-                  [210, 132],
-                  [92, 138],
-                  [44, 88],
-                ].map(([x, y]) => (
-                  <circle key={`${x}-${y}`} cx={x} cy={y} r="4" className="fill-background stroke-primary" strokeWidth="2" />
-                ))}
-              </svg>
-              <div className="relative z-10 text-center">
-                <MapPin className="mx-auto size-5 text-primary" />
-                <p className="mt-1 text-xs font-medium">{form.boundaryPoints}-point boundary</p>
-                <p className="text-[11px] text-muted-foreground">
-                  Map editor loads with the Maps key configured
-                </p>
-              </div>
-            </div>
+            <LocationPicker
+              value={
+                Number.isFinite(Number(form.lat)) && Number.isFinite(Number(form.lng))
+                  ? { lat: Number(form.lat), lng: Number(form.lng) }
+                  : null
+              }
+              onChange={(point) =>
+                setForm((f) => ({
+                  ...f,
+                  lat: point.lat.toFixed(6),
+                  lng: point.lng.toFixed(6),
+                }))
+              }
+              height={280}
+            />
+            <p className="text-xs text-muted-foreground">
+              Click the map or drag the pin to place the kerb. The coordinates below stay in step,
+              and can be typed directly when a survey has already fixed the point.
+            </p>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">

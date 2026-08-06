@@ -18,8 +18,10 @@ export interface ApiZone {
   closureReason?: string | null;
   closureUntil?: string | null;
   createdAt: string;
+  boundary?: { type: "Polygon"; coordinates: [number, number][][] } | null;
   ward?: { id: string; code: string; name: string } | null;
   street?: { id: string; name: string } | null;
+  vendor?: { id: string; orgName: string; commissionPct: string; status: string } | null;
   occupied: number;
   available: number;
   occupancyPct: number;

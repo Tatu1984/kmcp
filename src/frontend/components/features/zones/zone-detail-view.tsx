@@ -38,6 +38,7 @@ import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { RevenueChart, SessionsTrendChart } from "@/frontend/components/features/dashboard/charts";
 import { ZoneFormSheet } from "./zone-form-sheet";
 import { ZoneStatusDialog } from "./zone-status-dialog";
+import { ZoneMap } from "@/frontend/components/shared/map";
 import { ZONES, SLOTS, SESSIONS, TARIFFS, INCIDENTS, ATTENDANTS } from "@/frontend/lib/mock";
 import { ROUTES } from "@/shared/constants/routes";
 import {
@@ -113,7 +114,12 @@ export function ZoneDetailView({ zoneId }: { zoneId: string }) {
                 {
                   label: "Open in maps",
                   icon: MapPin,
-                  onSelect: () => toast.info("Opening map view"),
+                  onSelect: () =>
+                    window.open(
+                      `https://www.openstreetmap.org/?mlat=${zone.center.lat}&mlon=${zone.center.lng}#map=18/${zone.center.lat}/${zone.center.lng}`,
+                      "_blank",
+                      "noopener,noreferrer",
+                    ),
                 },
               ]}
             />
@@ -205,6 +211,23 @@ export function ZoneDetailView({ zoneId }: { zoneId: string }) {
                 </Field>
                 <Field label="Created">{formatDateTime(zone.createdAt)}</Field>
               </dl>
+
+              <div className="mt-4">
+                <ZoneMap
+                  zones={[
+                    {
+                      id: zone.id,
+                      code: zone.code,
+                      name: zone.name,
+                      center: zone.center,
+                      capacity: zone.capacity,
+                      occupied: zone.occupied,
+                      status: zone.status,
+                    },
+                  ]}
+                  height={260}
+                />
+              </div>
             </SectionCard>
 
             <SectionCard title="Operator" className="lg:col-span-1">
