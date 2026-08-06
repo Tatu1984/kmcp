@@ -13,6 +13,9 @@ import { Alert, AlertDescription } from "@/frontend/components/ui/alert";
 import { Separator } from "@/frontend/components/ui/separator";
 import { Logo } from "@/frontend/components/brand/logo";
 import { FadeIn, ShinyText, StarBorder } from "@/frontend/components/reactbits";
+import { authApi, ApiError } from "@/frontend/api";
+import { startSession, toSessionUser } from "@/frontend/lib/session";
+import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
 
 const DEMO_ACCOUNTS = [
@@ -27,8 +30,8 @@ export function LoginForm() {
   const params = useSearchParams();
   const next = params.get("next") ?? ROUTES.dashboard;
 
-  const [email, setEmail] = React.useState("sudipta.banerjee@kmc.gov.in");
-  const [password, setPassword] = React.useState("kmcp-demo");
+  const [email, setEmail] = React.useState(isLiveApi ? "" : "sudipta.banerjee@kmc.gov.in");
+  const [password, setPassword] = React.useState(isLiveApi ? "" : "kmcp-demo");
   const [showPassword, setShowPassword] = React.useState(false);
   const [remember, setRemember] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
@@ -48,13 +51,47 @@ export function LoginForm() {
     }
 
     setBusy(true);
-    await new Promise((r) => setTimeout(r, 650));
 
-    // Admin accounts carry mandatory 2FA — the flow continues on the next screen.
-    toast.success("Password accepted", { description: "Enter the 6-digit code from your authenticator." });
-    router.push(
-      `${ROUTES.twoFactor}?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`,
-    );
+    if (!isLiveApi) {
+      await new Promise((r) => setTimeout(r, 650));
+      // Admin accounts carry mandatory 2FA — the flow continues on the next screen.
+      toast.success("Password accepted", { description: "Enter the 6-digit code from your authenticator." });
+      router.push(
+        `${ROUTES.twoFactor}?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`,
+      );
+      return;
+    }
+
+    try {
+      const result = await authApi.login(email, password);
+
+      if (result.status === "two_factor_required" && result.challengeId) {
+        toast.success("Password accepted", {
+          description: "Enter the 6-digit code from your authenticator.",
+        });
+        router.push(
+          `${ROUTES.twoFactor}?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}` +
+            `&challenge=${encodeURIComponent(result.challengeId)}`,
+        );
+        return;
+      }
+
+      if (result.user) {
+        startSession(toSessionUser(result.user), remember);
+        router.push(next);
+        return;
+      }
+
+      setError("Signed in, but the server sent no account details. Try again.");
+      setBusy(false);
+    } catch (cause) {
+      setBusy(false);
+      setError(
+        cause instanceof ApiError
+          ? cause.message
+          : "Could not reach the sign-in service. Check your connection and try again.",
+      );
+    }
   }
 
   return (
@@ -142,6 +179,9 @@ export function LoginForm() {
         </p>
       </div>
 
+      {/* Only meaningful without a backend — against a live API these accounts
+          are not real and the buttons would fill in credentials that fail. */}
+      {!isLiveApi && (
       <div className="space-y-3">
         <div className="flex items-center gap-3">
           <Separator className="flex-1" />
@@ -168,6 +208,7 @@ export function LoginForm() {
           ))}
         </div>
       </div>
+      )}
     </FadeIn>
   );
 }

@@ -1,16 +1,17 @@
+// Demo data for screens not yet wired to the API.
+//
+// Audit, sign-in, device and sync data are deliberately absent. Those screens
+// read the real trail from the API — an audit view showing invented entries is
+// worse than one showing nothing at all.
+
 import type {
   Citizen,
-  AuditEntry,
-  LoginEntry,
-  DeviceEntry,
-  SyncEntry,
   NotificationItem,
   CmsPage,
   Faq,
   Banner,
   User,
 } from "@/shared/types/domain.types";
-import { ATTENDANTS } from "./partners";
 import { makeRng, daysAgo, minutesAgo } from "./rng";
 
 const rng = makeRng(424242);
@@ -66,82 +67,8 @@ export const CITIZENS: Citizen[] = CITIZEN_NAMES.map((name, i) => {
   };
 });
 
-const AUDIT_ACTIONS = [
-  { action: "TARIFF_PUBLISH", entity: "Tariff", label: "Park Street Premium — Car v4" },
-  { action: "ZONE_STATUS_CHANGE", entity: "Zone", label: "Russell Street → MAINTENANCE" },
-  { action: "VENDOR_SUSPEND", entity: "Vendor", label: "Shakti Parking Contractors" },
-  { action: "SETTLEMENT_APPROVE", entity: "Settlement", label: "STL/2026/1204" },
-  { action: "SESSION_CANCEL", entity: "ParkingSession", label: "KMCP-8F3K2Q" },
-  { action: "PAYMENT_REFUND", entity: "Payment", label: "pay_R482910034 · ₹150.00" },
-  { action: "USER_BLOCK", entity: "User", label: "Manoj Yadav (citizen)" },
-  { action: "ZONE_CREATE", entity: "Zone", label: "Nicco Park Gate (SLV-04)" },
-  { action: "RBAC_UPDATE", entity: "SystemConfig", label: "ZONE_OFFICER permissions" },
-  { action: "ATTENDANT_DEACTIVATE", entity: "Attendant", label: "ORBI-118" },
-  { action: "SHIFT_VERIFY", entity: "Shift", label: "shf_014 · variance ₹240" },
-  { action: "TAX_CONFIG_UPDATE", entity: "SystemConfig", label: "GST 18% → 18% (no change)" },
-  { action: "CMS_PUBLISH", entity: "CmsPage", label: "privacy-policy" },
-  { action: "DISCOUNT_CREATE", entity: "Discount", label: "MONSOON26" },
-];
 
-export const AUDIT_LOG: AuditEntry[] = Array.from({ length: 60 }).map((_, i) => {
-  const a = AUDIT_ACTIONS[i % AUDIT_ACTIONS.length];
-  const actor = rng.pick(PORTAL_USERS);
-  return {
-    id: `aud_${String(i + 1).padStart(4, "0")}`,
-    actorName: actor.name,
-    actorRole: actor.role,
-    action: a.action,
-    entity: a.entity,
-    entityLabel: a.label,
-    ip: `103.${rng.int(10, 250)}.${rng.int(1, 250)}.${rng.int(2, 250)}`,
-    device: rng.pick(["Chrome 141 · macOS", "Edge 140 · Windows", "Safari 19 · macOS", "Chrome 141 · Windows"]),
-    createdAt: minutesAgo(i * 47 + rng.int(1, 30)),
-    before: { status: "PREVIOUS" },
-    after: { status: "UPDATED" },
-  };
-});
 
-export const LOGIN_LOG: LoginEntry[] = Array.from({ length: 40 }).map((_, i) => {
-  const user = rng.pick(PORTAL_USERS);
-  const success = rng.bool(0.86);
-  return {
-    id: `lgn_${String(i + 1).padStart(4, "0")}`,
-    identifier: user.email ?? user.name,
-    role: user.role,
-    success,
-    reason: success ? undefined : rng.pick(["Wrong password", "Expired TOTP code", "Account suspended", "Unknown device"]),
-    ip: `103.${rng.int(10, 250)}.${rng.int(1, 250)}.${rng.int(2, 250)}`,
-    device: rng.pick(["Chrome 141 · macOS", "Edge 140 · Windows", "Safari 19 · iOS", "KMCP Vendor 1.0.3 · Android 14"]),
-    createdAt: minutesAgo(i * 63 + rng.int(1, 40)),
-  };
-});
-
-export const DEVICE_LOG: DeviceEntry[] = ATTENDANTS.slice(0, 26).map((a, i) => ({
-  id: `dev_${String(i + 1).padStart(3, "0")}`,
-  ownerName: a.name,
-  role: "ATTENDANT",
-  platform: rng.pick(["Android 14", "Android 13", "Android 12", "iOS 18"]),
-  fingerprint: `fp_${rng.int(100000, 999999).toString(16)}`,
-  appVersion: rng.pick(["1.0.3", "1.0.2", "1.0.1"]),
-  boundTo: a.vendorName,
-  lastSeenAt: minutesAgo(rng.int(2, 3000)),
-  isActive: a.deviceBound,
-}));
-
-export const SYNC_LOG: SyncEntry[] = Array.from({ length: 22 }).map((_, i) => {
-  const a = ATTENDANTS[i % ATTENDANTS.length];
-  const events = rng.int(1, 44);
-  const conflicts = rng.bool(0.18) ? rng.int(1, 3) : 0;
-  return {
-    id: `syn_${String(i + 1).padStart(3, "0")}`,
-    attendantName: a.name,
-    device: `${a.employeeCode} · Android`,
-    eventCount: events,
-    acceptedCount: events - conflicts,
-    conflictCount: conflicts,
-    createdAt: minutesAgo(i * 71 + rng.int(1, 40)),
-  };
-});
 
 export const NOTIFICATIONS: NotificationItem[] = [
   { id: "ntf_1", title: "Gariahat Market is at 97% capacity", body: "136 of 140 bays occupied. Consider diverting to Hindustan Park.", kind: "warning", href: "/zones", createdAt: minutesAgo(4), read: false },

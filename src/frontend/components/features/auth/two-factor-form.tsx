@@ -16,6 +16,9 @@ import {
 } from "@/frontend/components/ui/input-otp";
 import { Logo } from "@/frontend/components/brand/logo";
 import { FadeIn } from "@/frontend/components/reactbits";
+import { authApi, ApiError } from "@/frontend/api";
+import { startSession, toSessionUser } from "@/frontend/lib/session";
+import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
 
 export function TwoFactorForm() {
@@ -28,6 +31,7 @@ export function TwoFactorForm() {
   const [error, setError] = React.useState<string | null>(null);
   const [cooldown, setCooldown] = React.useState(0);
   const email = params.get("email") ?? "your account";
+  const challengeId = params.get("challenge");
 
   React.useEffect(() => {
     if (cooldown <= 0) return;
@@ -43,20 +47,49 @@ export function TwoFactorForm() {
         return;
       }
       setBusy(true);
-      await new Promise((r) => setTimeout(r, 700));
 
-      if (value === "000000") {
-        setBusy(false);
-        setCode("");
-        setError("That code has expired. Codes are valid for 30 seconds — try the current one.");
+      if (!isLiveApi) {
+        await new Promise((r) => setTimeout(r, 700));
+        if (value === "000000") {
+          setBusy(false);
+          setCode("");
+          setError("That code has expired. Codes are valid for 30 seconds — try the current one.");
+          return;
+        }
+        document.cookie = "kmcp_session=demo; path=/; samesite=lax; max-age=86400";
+        toast.success("Signed in", { description: "Welcome back to the KMCP portal." });
+        router.push(next);
         return;
       }
 
-      document.cookie = "kmcp_session=demo; path=/; max-age=86400";
-      toast.success("Signed in", { description: "Welcome back to the KMCP portal." });
-      router.push(next);
+      if (!challengeId) {
+        setBusy(false);
+        setCode("");
+        setError("This challenge is no longer valid. Start again from the sign-in screen.");
+        return;
+      }
+
+      try {
+        const result = await authApi.verifyTwoFactor(challengeId, value);
+        if (!result.user) {
+          setBusy(false);
+          setError("Verified, but the server sent no account details. Sign in again.");
+          return;
+        }
+        startSession(toSessionUser(result.user));
+        toast.success("Signed in", { description: "Welcome back to the KMCP portal." });
+        router.push(next);
+      } catch (cause) {
+        setBusy(false);
+        setCode("");
+        setError(
+          cause instanceof ApiError
+            ? cause.message
+            : "Could not reach the sign-in service. Check your connection and try again.",
+        );
+      }
     },
-    [next, router],
+    [challengeId, next, router],
   );
 
   return (
@@ -113,8 +146,14 @@ export function TwoFactorForm() {
             </InputOTPGroup>
           </InputOTP>
           <p className="text-xs text-muted-foreground">
-            Any six digits work in this demo. Enter <span className="font-mono">000000</span> to see
-            the expired-code path.
+            {isLiveApi ? (
+              "Codes rotate every 30 seconds. If it is rejected, wait for the next one."
+            ) : (
+              <>
+                Any six digits work in this demo. Enter <span className="font-mono">000000</span> to
+                see the expired-code path.
+              </>
+            )}
           </p>
         </div>
 

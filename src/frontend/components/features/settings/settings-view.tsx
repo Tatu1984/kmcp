@@ -50,7 +50,8 @@ import { RowActions } from "@/frontend/components/shared/row-actions";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, SectionCard } from "@/frontend/components/shared/bits";
-import { CURRENT_USER, PORTAL_USERS, DEVICE_LOG } from "@/frontend/lib/mock";
+import { PORTAL_USERS } from "@/frontend/lib/mock";
+import { useSession } from "@/frontend/hooks/use-session";
 import { PERMISSION_GROUPS, ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS, type Role } from "@/shared/constants/roles";
 import { ROLE_PERMISSIONS } from "@/backend/utils/rbac.util";
 import { APP, SETTLEMENT_CYCLES } from "@/config/app.config";
@@ -70,6 +71,7 @@ const TABS = [
 
 export function SettingsView() {
   const params = useSearchParams();
+  const { user: me } = useSession();
   const [tab, setTab] = React.useState(params.get("tab") ?? "general");
   const [dirty, setDirty] = React.useState(false);
   const [revokeOpen, setRevokeOpen] = React.useState(false);
@@ -627,25 +629,27 @@ export function SettingsView() {
         {/* -------------------------------------------------------- profile */}
         <TabsContent value="profile" className="mt-4 space-y-4">
           <SectionCard title="Your profile">
-            <div className="grid gap-4 sm:grid-cols-2">
+            {/* Keyed on the account id so the uncontrolled inputs re-seed once
+                the principal arrives from the API. */}
+            <div key={me?.id ?? "pending"} className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="profile-name">Full name</Label>
-                <Input id="profile-name" defaultValue={CURRENT_USER.name} onChange={() => setDirty(true)} />
+                <Input id="profile-name" defaultValue={me?.name ?? ""} onChange={() => setDirty(true)} />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="profile-email">Work email</Label>
-                <Input id="profile-email" defaultValue={CURRENT_USER.email} disabled />
+                <Input id="profile-email" defaultValue={me?.email ?? ""} disabled />
                 <p className="text-xs text-muted-foreground">
                   Changing your work email needs a Super Admin.
                 </p>
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="profile-phone">Mobile</Label>
-                <Input id="profile-phone" defaultValue={CURRENT_USER.phone} onChange={() => setDirty(true)} />
+                <Input id="profile-phone" defaultValue={me?.phone ?? ""} onChange={() => setDirty(true)} />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="profile-role">Role</Label>
-                <Input id="profile-role" defaultValue={ROLE_LABELS[CURRENT_USER.role]} disabled />
+                <Input id="profile-role" defaultValue={me ? ROLE_LABELS[me.role] : ""} disabled />
               </div>
             </div>
           </SectionCard>
@@ -699,8 +703,8 @@ export function SettingsView() {
             description="Mandatory for Super Admin and Administrator accounts"
             action={
               <StatusBadge
-                status={CURRENT_USER.twoFactorEnabled ? "ACTIVE" : "PENDING"}
-                label={CURRENT_USER.twoFactorEnabled ? "Enabled" : "Not set up"}
+                status={me?.twoFactorEnabled ? "ACTIVE" : "PENDING"}
+                label={me?.twoFactorEnabled ? "Enabled" : "Not set up"}
               />
             }
           >
@@ -721,24 +725,23 @@ export function SettingsView() {
 
           <SectionCard
             title="Signed-in devices"
-            description="Revoke anything you do not recognise"
             contentClassName="p-0"
             action={
               <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setRevokeOpen(true)}>
                 Revoke all
               </Button>
             }
+            description="Every device signed in to your account. The full estate is on the audit page."
           >
             <ul className="divide-y divide-border/60">
               {[
-                { id: "this", name: "This device", detail: "Chrome 141 · macOS · Kolkata", current: true, at: CURRENT_USER.lastLoginAt! },
-                ...DEVICE_LOG.slice(0, 3).map((d) => ({
-                  id: d.id,
-                  name: d.platform,
-                  detail: `${d.ownerName} · app ${d.appVersion}`,
-                  current: false,
-                  at: d.lastSeenAt,
-                })),
+                {
+                  id: "this",
+                  name: "This device",
+                  detail: "The browser you are reading this in",
+                  current: true,
+                  at: me?.lastLoginAt ?? me?.createdAt ?? "",
+                },
               ].map((device) => (
                 <li key={device.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                   <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted">
@@ -755,7 +758,9 @@ export function SettingsView() {
                     </p>
                     <p className="truncate text-xs text-muted-foreground">{device.detail}</p>
                   </div>
-                  <span className="text-xs text-muted-foreground">{relativeTime(device.at)}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {device.at ? relativeTime(device.at) : "—"}
+                  </span>
                   {!device.current && (
                     <Button
                       variant="ghost"

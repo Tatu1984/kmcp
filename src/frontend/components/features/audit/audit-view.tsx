@@ -6,17 +6,21 @@ import {
   Download,
   Eye,
   Fingerprint,
-  Laptop,
   LogIn,
   RefreshCcw,
   ScrollText,
+  ShieldAlert,
   ShieldCheck,
   Smartphone,
+  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import { Button } from "@/frontend/components/ui/button";
 import { Badge } from "@/frontend/components/ui/badge";
 import { Separator } from "@/frontend/components/ui/separator";
+import { Skeleton } from "@/frontend/components/ui/skeleton";
+import { Alert, AlertDescription, AlertTitle } from "@/frontend/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/frontend/components/ui/tabs";
 import {
   Sheet,
@@ -29,17 +33,31 @@ import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StatCard } from "@/frontend/components/shared/stat-card";
 import { DataTable } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
+import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
-import { Field } from "@/frontend/components/shared/bits";
+import { EmptyState } from "@/frontend/components/shared/empty-state";
+import { Field, SectionCard } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
-import { AUDIT_LOG, LOGIN_LOG, DEVICE_LOG, SYNC_LOG } from "@/frontend/lib/mock";
+import { auditApi, activityApi, type AuditEntry, type AuthEvent, type LiveSession } from "@/frontend/api";
+import { useApiQuery, emptyReason } from "@/frontend/hooks/use-api";
 import { formatDateTime, relativeTime } from "@/shared/utils/common.util";
 import { ROLE_LABELS } from "@/shared/constants/roles";
-import type { AuditEntry } from "@/shared/types/domain.types";
+
+const RISK_TONE = (score?: number | null) =>
+  !score ? "neutral" : score >= 60 ? "danger" : score >= 35 ? "warning" : "info";
 
 export function AuditView() {
   const [selected, setSelected] = React.useState<AuditEntry | null>(null);
-  const [sheetOpen, setSheetOpen] = React.useState(false);
+  const [selectedEvent, setSelectedEvent] = React.useState<AuthEvent | null>(null);
+  const [revokeTarget, setRevokeTarget] = React.useState<LiveSession | null>(null);
+
+  const summary = useApiQuery(["audit", "summary"], () => auditApi.summary().then((r) => r.data));
+  const overview = useApiQuery(["activity", "overview"], () => activityApi.overview().then((r) => r.data));
+  const logs = useApiQuery(["audit", "logs"], () => auditApi.logs({ pageSize: 100 }).then((r) => r.data));
+  const events = useApiQuery(["activity", "events"], () => activityApi.events({ pageSize: 100 }).then((r) => r.data));
+  const sessions = useApiQuery(["activity", "sessions"], () => activityApi.sessions().then((r) => r.data));
+
+  const blocked = emptyReason(logs.error ?? null, logs.isLoading);
 
   const auditColumns = React.useMemo<ColumnDef<AuditEntry, unknown>[]>(
     () => [
@@ -51,20 +69,21 @@ export function AuditView() {
           <div className="whitespace-nowrap">
             <p className="text-xs">{relativeTime(row.original.createdAt)}</p>
             <p className="text-[11px] text-muted-foreground">
-              {formatDateTime(row.original.createdAt).split(",")[1]}
+              {formatDateTime(row.original.createdAt)}
             </p>
           </div>
         ),
       },
       {
-        accessorKey: "actorName",
+        id: "actor",
+        accessorFn: (r) => r.actor?.name ?? "System",
         header: "Who",
         meta: "Actor",
         cell: ({ row }) => (
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium">{row.original.actorName}</p>
+            <p className="truncate text-sm font-medium">{row.original.actor?.name ?? "System"}</p>
             <p className="truncate text-[11px] text-muted-foreground">
-              {ROLE_LABELS[row.original.actorRole]}
+              {row.original.actor ? ROLE_LABELS[row.original.actor.role] : "automated"}
             </p>
           </div>
         ),
@@ -80,13 +99,15 @@ export function AuditView() {
         ),
       },
       {
-        accessorKey: "entityLabel",
+        accessorKey: "entity",
         header: "What",
         meta: "Entity",
         cell: ({ row }) => (
           <div className="min-w-0">
-            <p className="truncate text-sm">{row.original.entityLabel}</p>
-            <p className="truncate text-[11px] text-muted-foreground">{row.original.entity}</p>
+            <p className="truncate text-sm">{row.original.entity}</p>
+            <p className="truncate font-mono text-[11px] text-muted-foreground">
+              {row.original.entityId}
+            </p>
           </div>
         ),
       },
@@ -96,8 +117,10 @@ export function AuditView() {
         meta: "Origin",
         cell: ({ row }) => (
           <div className="min-w-0">
-            <p className="truncate font-mono text-[11px]">{row.original.ip}</p>
-            <p className="truncate text-[11px] text-muted-foreground">{row.original.device}</p>
+            <p className="truncate font-mono text-[11px]">{row.original.ip ?? "—"}</p>
+            <p className="truncate text-[11px] text-muted-foreground">
+              {row.original.userAgent?.slice(0, 40) ?? "—"}
+            </p>
           </div>
         ),
       },
@@ -110,20 +133,14 @@ export function AuditView() {
             <RowActions
               label="Entry"
               actions={[
+                { label: "View before / after", icon: Eye, onSelect: () => setSelected(row.original) },
                 {
-                  label: "View before / after",
-                  icon: Eye,
-                  onSelect: () => {
-                    setSelected(row.original);
-                    setSheetOpen(true);
-                  },
-                },
-                {
-                  label: "Copy entry ID",
+                  label: "Copy request id",
                   icon: Fingerprint,
+                  disabled: !row.original.requestId,
                   onSelect: () => {
-                    void navigator.clipboard.writeText(row.original.id);
-                    toast.success("Copied", { description: row.original.id });
+                    void navigator.clipboard.writeText(row.original.requestId ?? "");
+                    toast.success("Copied", { description: row.original.requestId });
                   },
                 },
               ]}
@@ -135,17 +152,161 @@ export function AuditView() {
     [],
   );
 
+  const eventColumns = React.useMemo<ColumnDef<AuthEvent, unknown>[]>(
+    () => [
+      {
+        accessorKey: "createdAt",
+        header: "When",
+        meta: "When",
+        cell: ({ row }) => (
+          <span className="text-xs whitespace-nowrap">{relativeTime(row.original.createdAt)}</span>
+        ),
+      },
+      {
+        id: "who",
+        accessorFn: (e) => e.userName ?? e.identifierTried ?? "unknown",
+        header: "Who",
+        meta: "Who",
+        cell: ({ row }) => (
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">
+              {row.original.userName ?? row.original.identifierTried ?? "unknown"}
+            </p>
+            <p className="truncate text-[11px] text-muted-foreground">
+              {row.original.userRole ? ROLE_LABELS[row.original.userRole] : "no such account"}
+            </p>
+          </div>
+        ),
+      },
+      {
+        accessorKey: "eventType",
+        header: "Result",
+        meta: "Result",
+        cell: ({ row }) => (
+          <div className="space-y-1">
+            <StatusBadge
+              status={row.original.eventType === "LOGIN_SUCCESS" ? "ACTIVE" : "FAILED"}
+              label={row.original.eventType.replace(/_/g, " ").toLowerCase()}
+            />
+            {row.original.failureReason && (
+              <p className="max-w-36 truncate text-[11px] text-muted-foreground">
+                {row.original.failureReason}
+              </p>
+            )}
+          </div>
+        ),
+      },
+      {
+        id: "where",
+        accessorFn: (e) => [e.city, e.country].filter(Boolean).join(", "),
+        header: "Where",
+        meta: "Where",
+        cell: ({ row }) => (
+          <div className="min-w-0">
+            <p className="truncate text-sm">
+              {[row.original.district, row.original.city, row.original.country]
+                .filter(Boolean)
+                .join(", ") || "—"}
+            </p>
+            <p className="truncate font-mono text-[11px] text-muted-foreground">
+              {row.original.ipAddress ?? "—"}
+              {row.original.isp ? ` · ${row.original.isp}` : ""}
+            </p>
+          </div>
+        ),
+      },
+      {
+        id: "device",
+        accessorFn: (e) => `${e.browserName ?? ""} ${e.osName ?? ""}`,
+        header: "Device",
+        meta: "Device",
+        cell: ({ row }) => (
+          <span className="text-xs whitespace-nowrap text-muted-foreground">
+            {[row.original.browserName, row.original.osName].filter(Boolean).join(" · ") || "—"}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "riskScore",
+        header: "Risk",
+        meta: "Risk",
+        cell: ({ row }) => {
+          const score = row.original.riskScore ?? 0;
+          if (!score) return <span className="text-xs text-muted-foreground">—</span>;
+          return (
+            <div className="flex items-center gap-1.5">
+              <StatusBadge
+                status={String(score)}
+                label={String(score)}
+                tone={RISK_TONE(score) as never}
+              />
+              {row.original.isTrusted && (
+                <Badge variant="outline" className="gap-1 text-[10px]">
+                  <ShieldCheck className="size-3" /> trusted
+                </Badge>
+              )}
+            </div>
+          );
+        },
+      },
+      {
+        id: "actions",
+        enableHiding: false,
+        header: () => <span className="sr-only">Actions</span>,
+        cell: ({ row }) => (
+          <div className="flex justify-end">
+            <RowActions
+              label="Sign-in"
+              actions={[
+                { label: "View detail", icon: Eye, onSelect: () => setSelectedEvent(row.original) },
+                {
+                  label: "Mark as legitimate",
+                  icon: ShieldCheck,
+                  hidden: !row.original.riskScore || row.original.isTrusted,
+                  onSelect: async () => {
+                    await activityApi.approve(row.original.id);
+                    toast.success("Location trusted", {
+                      description: "This account and address will stop being flagged.",
+                    });
+                    void events.refetch();
+                  },
+                },
+              ]}
+            />
+          </div>
+        ),
+      },
+    ],
+    [events],
+  );
+
+  if (blocked) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Audit trail"
+          description="Every change, sign-in, device and offline sync recorded by the API."
+        />
+        <Alert className="border-amber-500/30 bg-amber-500/[0.06]">
+          <TriangleAlert className="size-4 text-amber-600 dark:text-amber-400" />
+          <AlertTitle>No audit data to show</AlertTitle>
+          <AlertDescription>{blocked}</AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Audit trail"
-        description="Every mutation, sign-in, device binding and offline sync — with the actor, the before and after, the IP and the device."
+        description="Every change, sign-in, device and offline sync — recorded by the API, append-only, and never editable from this screen."
         actions={
           <Button
             size="sm"
             className="h-9"
             onClick={() =>
-              toast.success("Audit export queued", {
+              toast.success("Export queued", {
                 description: "A tamper-evident PDF for the selected period will be emailed to you.",
               })
             }
@@ -157,233 +318,188 @@ export function AuditView() {
 
       <FadeStagger className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <FadeStaggerItem>
-          <StatCard label="Audit entries" numeric={AUDIT_LOG.length} icon={ScrollText} hint="In the last 7 days" />
+          <StatCard
+            label="Recorded changes"
+            value={summary.isLoading ? <Skeleton className="h-7 w-14" /> : (summary.data?.total ?? 0)}
+            icon={ScrollText}
+            hint={`${summary.data?.thisWeek ?? 0} in the last 7 days`}
+          />
         </FadeStaggerItem>
         <FadeStaggerItem>
           <StatCard
-            label="Failed sign-ins"
-            numeric={LOGIN_LOG.filter((l) => !l.success).length}
+            label="Sign-ins today"
+            value={overview.isLoading ? <Skeleton className="h-7 w-14" /> : (overview.data?.signInsToday ?? 0)}
             icon={LogIn}
-            accent={LOGIN_LOG.filter((l) => !l.success).length > 4 ? "warning" : "success"}
-            hint="Wrong password, expired code or unknown device"
-          />
-        </FadeStaggerItem>
-        <FadeStaggerItem>
-          <StatCard
-            label="Bound devices"
-            numeric={DEVICE_LOG.filter((d) => d.isActive).length}
-            icon={Smartphone}
             accent="info"
-            hint={`${DEVICE_LOG.length} devices on record`}
+            hint={`${overview.data?.failuresToday ?? 0} failed`}
           />
         </FadeStaggerItem>
         <FadeStaggerItem>
           <StatCard
-            label="Sync conflicts"
-            numeric={SYNC_LOG.reduce((s, x) => s + x.conflictCount, 0)}
-            icon={RefreshCcw}
-            accent={SYNC_LOG.some((s) => s.conflictCount > 0) ? "warning" : "success"}
-            hint="Offline events needing a supervisor"
+            label="Flagged this week"
+            value={overview.isLoading ? <Skeleton className="h-7 w-14" /> : (overview.data?.flaggedThisWeek ?? 0)}
+            icon={ShieldAlert}
+            accent={(overview.data?.flaggedThisWeek ?? 0) > 0 ? "warning" : "success"}
+            hint="Sign-ins the anomaly engine scored"
+          />
+        </FadeStaggerItem>
+        <FadeStaggerItem>
+          <StatCard
+            label="Live sessions"
+            value={overview.isLoading ? <Skeleton className="h-7 w-14" /> : (overview.data?.liveSessions ?? 0)}
+            icon={Smartphone}
+            hint={`from ${overview.data?.distinctIpsThisWeek ?? 0} addresses this week`}
           />
         </FadeStaggerItem>
       </FadeStagger>
 
       <Tabs defaultValue="changes">
         <TabsList className="w-full justify-start overflow-x-auto">
-          <TabsTrigger value="changes">Changes ({AUDIT_LOG.length})</TabsTrigger>
-          <TabsTrigger value="logins">Sign-ins ({LOGIN_LOG.length})</TabsTrigger>
-          <TabsTrigger value="devices">Devices ({DEVICE_LOG.length})</TabsTrigger>
-          <TabsTrigger value="sync">Offline sync ({SYNC_LOG.length})</TabsTrigger>
+          <TabsTrigger value="changes">Changes</TabsTrigger>
+          <TabsTrigger value="signins">Sign-ins</TabsTrigger>
+          <TabsTrigger value="sessions">Live sessions</TabsTrigger>
+          <TabsTrigger value="places">Places</TabsTrigger>
         </TabsList>
 
-        {/* -------------------------------------------------------- changes */}
         <TabsContent value="changes" className="mt-4">
-          <DataTable
-            data={AUDIT_LOG}
-            columns={auditColumns}
-            searchKeys={["actorName", "action", "entity", "entityLabel", "ip"]}
-            searchPlaceholder="Search actor, action, entity or IP…"
-            facets={[
-              {
-                columnId: "action",
-                label: "Action",
-                options: [...new Set(AUDIT_LOG.map((a) => a.action))].map((a) => ({
-                  value: a,
-                  label: a,
-                })),
-              },
-              {
-                columnId: "actorName",
-                label: "Actor",
-                options: [...new Set(AUDIT_LOG.map((a) => a.actorName))].map((a) => ({
-                  value: a,
-                  label: a,
-                })),
-              },
-            ]}
-            onRowClick={(entry) => {
-              setSelected(entry);
-              setSheetOpen(true);
-            }}
-            onExport={(rows) => toast.success("Export queued", { description: `${rows.length} entries` })}
-            emptyTitle="No audit entries"
-            emptyDescription="Every change made in the portal is recorded here automatically."
-          />
+          {logs.isLoading ? (
+            <Skeleton className="h-96 w-full rounded-xl" />
+          ) : (
+            <DataTable
+              data={logs.data ?? []}
+              columns={auditColumns}
+              searchKeys={["action", "entity", "entityId"]}
+              searchPlaceholder="Search action, entity or id…"
+              onRowClick={setSelected}
+              emptyTitle="No changes recorded yet"
+              emptyDescription="Entries appear here the moment anyone changes a zone, tariff, vendor or settlement."
+            />
+          )}
         </TabsContent>
 
-        {/* --------------------------------------------------------- logins */}
-        <TabsContent value="logins" className="mt-4">
-          <div className="overflow-hidden rounded-xl border bg-card">
-            <ul className="divide-y divide-border/60">
-              {LOGIN_LOG.map((entry) => (
-                <li key={entry.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5">
-                  <span
-                    className={`grid size-8 shrink-0 place-items-center rounded-lg ${
-                      entry.success
-                        ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                        : "bg-red-500/10 text-red-600 dark:text-red-400"
-                    }`}
-                  >
-                    <LogIn className="size-4" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{entry.identifier}</p>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {ROLE_LABELS[entry.role]} · {entry.device}
-                    </p>
-                  </div>
-                  {entry.reason && (
-                    <Badge variant="outline" className="text-red-600 dark:text-red-400">
-                      {entry.reason}
-                    </Badge>
-                  )}
-                  <span className="font-mono text-[11px] text-muted-foreground">{entry.ip}</span>
-                  <span className="w-20 text-right text-xs text-muted-foreground">
-                    {relativeTime(entry.createdAt)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
+        <TabsContent value="signins" className="mt-4">
+          {events.isLoading ? (
+            <Skeleton className="h-96 w-full rounded-xl" />
+          ) : (
+            <DataTable
+              data={events.data ?? []}
+              columns={eventColumns}
+              searchKeys={["userName", "identifierTried", "ipAddress", "city", "isp"]}
+              searchPlaceholder="Search account, IP, city or ISP…"
+              onRowClick={setSelectedEvent}
+              emptyTitle="No sign-in activity"
+              emptyDescription="Every attempt is recorded here, including ones against accounts that do not exist."
+            />
+          )}
         </TabsContent>
 
-        {/* -------------------------------------------------------- devices */}
-        <TabsContent value="devices" className="mt-4">
-          <div className="overflow-hidden rounded-xl border bg-card">
-            <ul className="divide-y divide-border/60">
-              {DEVICE_LOG.map((device) => (
-                <li key={device.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted">
-                    {device.platform.startsWith("iOS") ? (
-                      <Smartphone className="size-4 text-muted-foreground" />
-                    ) : (
-                      <Laptop className="size-4 text-muted-foreground" />
+        <TabsContent value="sessions" className="mt-4">
+          <SectionCard
+            title="Live sessions"
+            description="More than one session for the same account is the shape account-sharing takes"
+            contentClassName="p-0"
+          >
+            {sessions.isLoading ? (
+              <Skeleton className="m-4 h-64" />
+            ) : (sessions.data ?? []).length === 0 ? (
+              <EmptyState title="No live sessions" description="Nobody is currently signed in." />
+            ) : (
+              <ul className="divide-y divide-border/60">
+                {(sessions.data ?? []).map((s) => (
+                  <li key={s.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{s.userName ?? s.userId}</p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {[s.city, s.country].filter(Boolean).join(", ") || "unknown place"} ·{" "}
+                        <span className="font-mono">{s.ipAddress}</span>
+                        {s.isp ? ` · ${s.isp}` : ""}
+                      </p>
+                    </div>
+                    {s.concurrentForUser > 1 && (
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "gap-1",
+                          s.concurrentForUser > 2
+                            ? "text-red-600 dark:text-red-400"
+                            : "text-amber-600 dark:text-amber-400",
+                        )}
+                      >
+                        <TriangleAlert className="size-3" />
+                        {s.concurrentForUser} concurrent
+                      </Badge>
                     )}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{device.ownerName}</p>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {device.platform} · app {device.appVersion} · {device.boundTo}
-                    </p>
-                  </div>
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    {device.fingerprint}
-                  </span>
-                  <StatusBadge
-                    status={device.isActive ? "ACTIVE" : "INACTIVE"}
-                    label={device.isActive ? "Bound" : "Unbound"}
-                  />
-                  <span className="w-20 text-right text-xs text-muted-foreground">
-                    {relativeTime(device.lastSeenAt)}
-                  </span>
-                  <RowActions
-                    label={device.ownerName}
-                    actions={[
-                      {
-                        label: "Unbind device",
-                        icon: Smartphone,
-                        destructive: true,
-                        onSelect: () =>
-                          toast.success("Device unbound", {
-                            description: `${device.ownerName} must register a new device at next sign-in.`,
-                          }),
-                      },
-                    ]}
-                  />
-                </li>
-              ))}
-            </ul>
-          </div>
+                    <span className="text-xs whitespace-nowrap text-muted-foreground">
+                      {relativeTime(s.lastSeenAt)}
+                    </span>
+                    <RowActions
+                      label="Session"
+                      actions={[
+                        {
+                          label: "Force sign-out",
+                          icon: ShieldAlert,
+                          destructive: true,
+                          onSelect: () => setRevokeTarget(s),
+                        },
+                      ]}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SectionCard>
         </TabsContent>
 
-        {/* ----------------------------------------------------------- sync */}
-        <TabsContent value="sync" className="mt-4">
-          <div className="overflow-hidden rounded-xl border bg-card">
-            <ul className="divide-y divide-border/60">
-              {SYNC_LOG.map((entry) => (
-                <li key={entry.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted">
-                    <RefreshCcw className="size-4 text-muted-foreground" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{entry.attendantName}</p>
-                    <p className="truncate text-xs text-muted-foreground">{entry.device}</p>
-                  </div>
-                  <Badge variant="secondary" className="tabular">
-                    {entry.eventCount} events
-                  </Badge>
-                  <Badge
-                    variant="outline"
-                    className={
-                      entry.conflictCount > 0
-                        ? "tabular text-amber-600 dark:text-amber-400"
-                        : "tabular text-emerald-600 dark:text-emerald-400"
-                    }
-                  >
-                    {entry.acceptedCount} accepted
-                    {entry.conflictCount > 0 && ` · ${entry.conflictCount} conflict`}
-                  </Badge>
-                  <span className="w-20 text-right text-xs text-muted-foreground">
-                    {relativeTime(entry.createdAt)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div className="mt-3 flex items-start gap-2 rounded-lg border border-dashed bg-muted/25 p-3 text-xs text-muted-foreground">
-            <ShieldCheck className="mt-0.5 size-4 shrink-0" />
-            <p className="text-pretty">
-              Replayed events carry a client-generated <span className="font-mono">clientEventId</span>{" "}
-              with a unique constraint, so a retry returns the original result instead of creating a
-              duplicate session. Conflicts are surfaced to a supervisor and never silently dropped.
-            </p>
-          </div>
+        <TabsContent value="places" className="mt-4">
+          <SectionCard
+            title="Where people sign in from"
+            description="Last 7 days, by city"
+            contentClassName="p-0"
+          >
+            {(overview.data?.topCities ?? []).length === 0 ? (
+              <EmptyState title="No location data yet" description="Sign-ins will be mapped here." />
+            ) : (
+              <ul className="divide-y divide-border/60">
+                {(overview.data?.topCities ?? []).map((c) => (
+                  <li key={c.city ?? "unknown"} className="flex items-center gap-3 px-4 py-2.5">
+                    <span className="min-w-0 flex-1 truncate text-sm">{c.city ?? "Unknown"}</span>
+                    <Badge variant="secondary" className="tabular">
+                      {c.count} sign-ins
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SectionCard>
         </TabsContent>
       </Tabs>
 
-      {/* ------------------------------------------------------- diff sheet */}
-      <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+      {/* ------------------------------------------------------ change detail */}
+      <Sheet open={Boolean(selected)} onOpenChange={(o) => !o && setSelected(null)}>
         <SheetContent className="w-full gap-0 overflow-y-auto sm:max-w-lg">
           {selected && (
             <>
               <SheetHeader className="gap-2">
                 <SheetTitle className="font-mono text-base">{selected.action}</SheetTitle>
                 <SheetDescription>
-                  {selected.actorName} · {formatDateTime(selected.createdAt)}
+                  {selected.actor?.name ?? "System"} · {formatDateTime(selected.createdAt)}
                 </SheetDescription>
               </SheetHeader>
 
               <div className="space-y-4 px-4">
                 <dl className="divide-y divide-border/60">
                   <Field label="Entity">{selected.entity}</Field>
-                  <Field label="Target">{selected.entityLabel}</Field>
-                  <Field label="Actor role">{ROLE_LABELS[selected.actorRole]}</Field>
-                  <Field label="IP address">
-                    <span className="font-mono text-xs">{selected.ip}</span>
+                  <Field label="Record">
+                    <span className="font-mono text-xs">{selected.entityId}</span>
                   </Field>
-                  <Field label="Device">{selected.device}</Field>
-                  <Field label="Entry ID">
-                    <span className="font-mono text-xs">{selected.id}</span>
+                  <Field label="Actor role">
+                    {selected.actor ? ROLE_LABELS[selected.actor.role] : "automated"}
+                  </Field>
+                  <Field label="IP address">
+                    <span className="font-mono text-xs">{selected.ip ?? "—"}</span>
+                  </Field>
+                  <Field label="Request id">
+                    <span className="font-mono text-xs">{selected.requestId ?? "—"}</span>
                   </Field>
                 </dl>
 
@@ -405,14 +521,143 @@ export function AuditView() {
                 </div>
 
                 <p className="text-xs text-muted-foreground text-pretty">
-                  Audit entries are append-only. Nothing in this table can be edited or deleted from
-                  the portal, including by a Super Admin.
+                  Audit entries are append-only. Nothing here can be edited or deleted from the
+                  portal, including by a Super Admin.
                 </p>
               </div>
             </>
           )}
         </SheetContent>
       </Sheet>
+
+      {/* ------------------------------------------------------ sign-in detail */}
+      <Sheet open={Boolean(selectedEvent)} onOpenChange={(o) => !o && setSelectedEvent(null)}>
+        <SheetContent className="w-full gap-0 overflow-y-auto sm:max-w-lg">
+          {selectedEvent && (
+            <>
+              <SheetHeader className="gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <SheetTitle>
+                    {selectedEvent.userName ?? selectedEvent.identifierTried ?? "Unknown account"}
+                  </SheetTitle>
+                  <StatusBadge
+                    status={selectedEvent.eventType === "LOGIN_SUCCESS" ? "ACTIVE" : "FAILED"}
+                    label={selectedEvent.eventType.replace(/_/g, " ").toLowerCase()}
+                  />
+                  {(selectedEvent.riskScore ?? 0) > 0 && (
+                    <StatusBadge
+                      status="risk"
+                      label={`risk ${selectedEvent.riskScore}`}
+                      tone={RISK_TONE(selectedEvent.riskScore) as never}
+                    />
+                  )}
+                </div>
+                <SheetDescription>{formatDateTime(selectedEvent.createdAt)}</SheetDescription>
+              </SheetHeader>
+
+              <div className="space-y-4 px-4">
+                {(selectedEvent.anomalies ?? []).length > 0 && (
+                  <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-3">
+                    <p className="text-sm font-medium">What was flagged</p>
+                    {(selectedEvent.anomalies ?? []).map((a) => (
+                      <div key={a.code} className="flex items-start gap-2">
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "shrink-0 text-[10px]",
+                            a.severity === "high" && "text-red-600 dark:text-red-400",
+                            a.severity === "medium" && "text-amber-600 dark:text-amber-400",
+                          )}
+                        >
+                          {a.severity}
+                        </Badge>
+                        <div className="min-w-0">
+                          <p className="font-mono text-[11px]">{a.code}</p>
+                          <p className="text-xs text-muted-foreground text-pretty">{a.detail}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <dl className="divide-y divide-border/60">
+                  <Field label="IP address">
+                    <span className="font-mono text-xs">{selectedEvent.ipAddress ?? "—"}</span>
+                  </Field>
+                  <Field label="Place">
+                    {[selectedEvent.district, selectedEvent.city, selectedEvent.region, selectedEvent.country]
+                      .filter(Boolean)
+                      .join(", ") || "—"}
+                  </Field>
+                  <Field label="PIN code">{selectedEvent.postal ?? "—"}</Field>
+                  <Field label="Coordinates">
+                    {selectedEvent.latitude != null
+                      ? `${selectedEvent.latitude}, ${selectedEvent.longitude}`
+                      : "—"}
+                  </Field>
+                  <Field label="Network">{selectedEvent.isp ?? "—"}</Field>
+                  <Field label="ASN">
+                    <span className="font-mono text-xs">{selectedEvent.asn ?? "—"}</span>
+                  </Field>
+                  <Field label="VPN or proxy">
+                    {selectedEvent.isVpnOrProxy == null ? "unknown" : selectedEvent.isVpnOrProxy ? "yes" : "no"}
+                  </Field>
+                  <Field label="Network timezone">{selectedEvent.ipTimezone ?? "—"}</Field>
+                  <Field label="Device timezone">{selectedEvent.clientTimezone ?? "—"}</Field>
+                  <Field label="Browser">{selectedEvent.browserName ?? "—"}</Field>
+                  <Field label="Operating system">{selectedEvent.osName ?? "—"}</Field>
+                  <Field label="Device type">{selectedEvent.deviceType ?? "—"}</Field>
+                  <Field label="Fingerprint">
+                    <span className="font-mono text-[11px]">
+                      {selectedEvent.deviceFingerprint ?? "—"}
+                    </span>
+                  </Field>
+                  <Field label="Geo source">{selectedEvent.geoSource ?? "—"}</Field>
+                </dl>
+
+                {(selectedEvent.riskScore ?? 0) > 0 && !selectedEvent.isTrusted && (
+                  <Button
+                    className="w-full"
+                    variant="outline"
+                    onClick={async () => {
+                      await activityApi.approve(selectedEvent.id);
+                      toast.success("Location trusted");
+                      setSelectedEvent(null);
+                      void events.refetch();
+                    }}
+                  >
+                    <ShieldCheck className="size-4" /> Mark this place as legitimate
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      <ConfirmDialog
+        open={Boolean(revokeTarget)}
+        onOpenChange={(o) => !o && setRevokeTarget(null)}
+        title={`Force ${revokeTarget?.userName ?? "this account"} to sign out?`}
+        destructive
+        confirmLabel="End session"
+        reason={{ label: "Why?", placeholder: "Suspected shared login / handset lost…", required: true }}
+        description="The session ends immediately. They will need to sign in again, and the reason is recorded against your name."
+        onConfirm={async (reason) => {
+          if (!revokeTarget) return;
+          await activityApi.revokeSession(revokeTarget.sessionId, reason ?? "Revoked by administrator");
+          toast.success("Session ended");
+          void sessions.refetch();
+        }}
+      />
+
+      <div className="flex items-start gap-2 rounded-lg border border-dashed bg-muted/25 p-3 text-xs text-muted-foreground">
+        <RefreshCcw className="mt-0.5 size-4 shrink-0" />
+        <p className="text-pretty">
+          Everything on this page comes from the API. There is no seeded or sample data here — if a
+          tab is empty, nothing of that kind has happened yet.
+        </p>
+      </div>
     </div>
   );
 }
