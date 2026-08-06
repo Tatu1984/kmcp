@@ -31,6 +31,9 @@ import { Money, Plate } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SessionDetailSheet } from "./session-detail-sheet";
 import { SESSIONS, ZONES } from "@/frontend/lib/mock";
+import { sessionsApi } from "@/frontend/api";
+import { useResource } from "@/frontend/hooks/use-api";
+import { toSession } from "@/frontend/lib/adapters";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatDuration, formatTime, relativeTime } from "@/shared/utils/common.util";
 import { VEHICLE_TYPE_LABELS, PAYMENT_MODE_LABELS } from "@/config/app.config";
@@ -38,7 +41,16 @@ import type { ParkingSession } from "@/shared/types/domain.types";
 
 export function SessionsView() {
   const params = useSearchParams();
-  const [sessions, setSessions] = React.useState<ParkingSession[]>(SESSIONS);
+  const {
+    items: sessions,
+    isLoading,
+    emptyReason,
+    apply,
+  } = useResource<ParkingSession>(
+    ["sessions", "list"],
+    () => sessionsApi.list({ pageSize: 200 }).then((r) => r.data.map(toSession)),
+    SESSIONS,
+  );
   const [selected, setSelected] = React.useState<ParkingSession | null>(null);
   const [sheetOpen, setSheetOpen] = React.useState(false);
 
@@ -358,20 +370,25 @@ export function SessionsView() {
             </Button>
           </>
         )}
-        emptyTitle="No sessions in this view"
-        emptyDescription="Sessions appear here the moment an attendant starts one at the kerb."
+        isLoading={isLoading}
+        emptyTitle={emptyReason ? "Nothing to show" : "No sessions in this view"}
+        emptyDescription={
+          emptyReason ?? "Sessions appear here the moment an attendant starts one at the kerb."
+        }
       />
 
       <SessionDetailSheet
         session={selected}
         open={sheetOpen}
         onOpenChange={setSheetOpen}
-        onCancelled={(id) => {
-          setSessions((list) =>
-            list.map((s) => (s.id === id ? { ...s, status: "CANCELLED" as const } : s)),
-          );
-        }}
-        onExtended={(id) => setSessions((list) => list.map((s) => (s.id === id ? { ...s } : s)))}
+        onCancelled={(id, reason) =>
+          apply(
+            () => sessionsApi.cancel(id, reason ?? "Cancelled from the portal"),
+            (list) => list.map((s) => (s.id === id ? { ...s, status: "CANCELLED" as const } : s)),
+            { success: "Session cancelled" },
+          )
+        }
+        onExtended={(id) => apply(async () => undefined, (list) => list.map((s) => (s.id === id ? { ...s } : s)))}
       />
     </div>
   );

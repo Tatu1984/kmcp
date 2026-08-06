@@ -1,4 +1,6 @@
 import type { ApiZone, ApiVendor } from "@/frontend/api";
+import type { ApiSession } from "@/frontend/api/endpoints/sessions.api";
+import type { ApiTariff } from "@/frontend/api/endpoints/tariffs.api";
 import type {
   ApiSlot,
   ApiAttendant,
@@ -16,6 +18,8 @@ import type {
   CmsPage,
   Faq,
   Banner,
+  ParkingSession,
+  Tariff,
 } from "@/shared/types/domain.types";
 
 /**
@@ -171,5 +175,61 @@ export function toBanner(banner: ApiBanner): Banner {
     startAt: banner.startAt,
     endAt: banner.endAt,
     isActive: banner.isActive,
+  };
+}
+
+export function toSession(session: ApiSession): ParkingSession {
+  return {
+    id: session.id,
+    code: session.code,
+    plateNumber: session.plateNumber,
+    vehicleType: session.vehicleType?.code ?? "CAR",
+    zoneId: session.zoneId,
+    zoneName: session.zone?.name ?? "—",
+    slotCode: session.slot?.code,
+    vendorName: session.vendor?.orgName ?? "—",
+    attendantName: session.attendant?.user?.name ?? "—",
+    status: session.status,
+    source: session.source,
+    startAt: session.startAt,
+    endAt: session.endAt ?? undefined,
+    durationMinutes: session.durationMinutes ?? session.elapsedMinutes ?? undefined,
+    grossAmount: session.grossAmount ?? undefined,
+    discountAmount: session.discountAmount,
+    taxAmount: session.taxAmount,
+    penaltyAmount: session.penaltyAmount,
+    payableAmount: session.payableAmount ?? undefined,
+    // Payment state belongs to the payments module, which does not exist yet.
+    // Reporting "unpaid" would be an assertion; this is simply not yet known.
+    paymentMode: undefined,
+    paid: false,
+    evidenceStart: session.evidenceStartMediaId ?? undefined,
+    evidenceEnd: session.evidenceEndMediaId ?? undefined,
+    isOverstay: session.isOverstay ?? false,
+  };
+}
+
+export function toTariff(tariff: ApiTariff): Tariff {
+  return {
+    id: tariff.id,
+    name: tariff.name,
+    zoneId: tariff.zoneId ?? undefined,
+    // A tariff with no zone applies city-wide; that is a meaning, not a gap.
+    zoneName: tariff.zone?.name ?? "All zones",
+    vehicleType: tariff.vehicleType?.code ?? "CAR",
+    baseAmount: tariff.baseAmount,
+    baseMinutes: tariff.baseMinutes,
+    incrementAmount: tariff.incrementAmount,
+    incrementMinutes: tariff.incrementMinutes,
+    dailyCapAmount: tariff.dailyCapAmount ?? undefined,
+    gracePeriodMin: tariff.gracePeriodMin,
+    overstayPenalty: tariff.overstayPenalty ?? undefined,
+    taxPercent: tariff.taxPercent,
+    effectiveFrom: tariff.effectiveFrom,
+    effectiveTo: tariff.effectiveTo ?? undefined,
+    isPublished: tariff.isPublished,
+    version: tariff.version,
+    rules: (tariff.rules ?? []) as Tariff["rules"],
+    createdAt: tariff.createdAt,
   };
 }

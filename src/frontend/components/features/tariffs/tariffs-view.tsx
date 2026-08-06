@@ -31,12 +31,46 @@ import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { TariffFormSheet } from "./tariff-form-sheet";
 import { QuoteCalculator } from "./quote-calculator";
 import { TARIFFS, HOLIDAYS, DISCOUNTS, ZONES } from "@/frontend/lib/mock";
+import { tariffsApi } from "@/frontend/api";
+import { useResource } from "@/frontend/hooks/use-api";
+import { toTariff } from "@/frontend/lib/adapters";
 import { formatDate, formatDuration } from "@/shared/utils/common.util";
 import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
 import type { Tariff } from "@/shared/types/domain.types";
 
+/** The form edits the rendered shape; the API takes its own field names. */
+function toTariffPayload(draft: Partial<Tariff>): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  const put = (key: string, value: unknown) => {
+    if (value !== undefined && value !== "") payload[key] = value;
+  };
+  put("name", draft.name);
+  put("zoneId", draft.zoneId);
+  put("vehicleTypeId", draft.vehicleType);
+  put("baseAmount", draft.baseAmount);
+  put("baseMinutes", draft.baseMinutes);
+  put("incrementAmount", draft.incrementAmount);
+  put("incrementMinutes", draft.incrementMinutes);
+  put("dailyCapAmount", draft.dailyCapAmount);
+  put("gracePeriodMin", draft.gracePeriodMin);
+  put("overstayPenalty", draft.overstayPenalty);
+  put("taxPercent", draft.taxPercent);
+  put("effectiveFrom", draft.effectiveFrom);
+  put("effectiveTo", draft.effectiveTo);
+  return payload;
+}
+
 export function TariffsView() {
-  const [tariffs, setTariffs] = React.useState<Tariff[]>(TARIFFS);
+  const {
+    items: tariffs,
+    isLoading,
+    emptyReason,
+    apply,
+  } = useResource<Tariff>(
+    ["tariffs", "list"],
+    () => tariffsApi.list({ pageSize: 200 }).then((r) => r.data.map(toTariff)),
+    TARIFFS,
+  );
   const [selected, setSelected] = React.useState<Tariff | null>(null);
   const [formOpen, setFormOpen] = React.useState(false);
   const [publishOpen, setPublishOpen] = React.useState(false);
@@ -157,17 +191,23 @@ export function TariffsView() {
                     label: "Duplicate",
                     icon: Copy,
                     onSelect: () => {
-                      setTariffs((list) => [
+                      void apply(
+                        () => tariffsApi.duplicate(tariff.id),
+                        (list) => [
                         {
                           ...tariff,
                           id: `trf_copy_${list.length}`,
                           name: `${tariff.name} (copy)`,
                           isPublished: false,
                           version: tariff.version + 1,
+                          },
+                          ...list,
+                        ],
+                        {
+                          success: "Tariff duplicated",
+                          description: "Saved as an unpublished draft.",
                         },
-                        ...list,
-                      ]);
-                      toast.success("Tariff duplicated", { description: "Saved as an unpublished draft." });
+                      ).catch(() => undefined);
                     },
                   },
                   {
@@ -197,7 +237,7 @@ export function TariffsView() {
         },
       },
     ],
-    [],
+    [apply],
   );
 
   const published = tariffs.filter((t) => t.isPublished).length;
@@ -274,8 +314,9 @@ export function TariffsView() {
               setFormOpen(true);
             }}
             onExport={(rows) => toast.success("Export queued", { description: `${rows.length} tariffs` })}
-            emptyTitle="No tariffs configured"
-            emptyDescription="Draft a rate card so attendants can start charging for parking."
+            isLoading={isLoading}
+        emptyTitle={emptyReason ? "Nothing to show" : "No tariffs configured"}
+            emptyDescription={emptyReason ?? "Draft a rate card so attendants can start charging for parking."}
           />
         </TabsContent>
 
@@ -400,25 +441,36 @@ export function TariffsView() {
         open={formOpen}
         onOpenChange={setFormOpen}
         tariff={selected}
-        onSaved={(draft) => {
-          if (selected && !selected.isPublished) {
-            setTariffs((list) =>
-              list.map((t) => (t.id === selected.id ? ({ ...t, ...draft } as Tariff) : t)),
-            );
-          } else {
-            setTariffs((list) => [
-              {
-                ...(draft as Tariff),
-                id: `trf_new_${list.length}`,
-                zoneName: draft.zoneId ? ZONES.find((z) => z.id === draft.zoneId)?.name ?? "—" : "All zones",
-                isPublished: false,
-                version: (selected?.version ?? 0) + 1,
-                createdAt: new Date().toISOString(),
-              },
-              ...list,
-            ]);
-          }
-        }}
+        onSaved={(draft) =>
+          apply(
+            () =>
+              // A published version is never edited in place — the API forks a
+              // new draft, which is what keeps a historic session re-priceable.
+              selected && !selected.isPublished
+                ? tariffsApi.update(selected.id, toTariffPayload(draft))
+                : tariffsApi.create(toTariffPayload(draft)),
+            (list) =>
+              selected && !selected.isPublished
+                ? list.map((t) => (t.id === selected.id ? ({ ...t, ...draft } as Tariff) : t))
+                : [
+                    {
+                      ...(draft as Tariff),
+                      id: `trf_new_${list.length}`,
+                      zoneName: draft.zoneId
+                        ? (ZONES.find((z) => z.id === draft.zoneId)?.name ?? "—")
+                        : "All zones",
+                      isPublished: false,
+                      version: (selected?.version ?? 0) + 1,
+                      createdAt: new Date().toISOString(),
+                    },
+                    ...list,
+                  ],
+            {
+              success: selected && !selected.isPublished ? "Tariff updated" : "Draft created",
+              description: draft.name,
+            },
+          )
+        }
       />
 
       <ConfirmDialog
@@ -440,13 +492,13 @@ export function TariffsView() {
             </p>
           </div>
         }
-        onConfirm={(reason) => {
-          setTariffs((list) =>
-            list.map((t) => (t.id === selected?.id ? { ...t, isPublished: true } : t)),
+        onConfirm={async (reason) => {
+          if (!selected) return;
+          await apply(
+            () => tariffsApi.publish(selected.id, reason ?? "Approved from the portal"),
+            (list) => list.map((t) => (t.id === selected.id ? { ...t, isPublished: true } : t)),
+            { success: "Tariff published", description: `${selected.name} · approval ${reason}` },
           );
-          toast.success("Tariff published", {
-            description: `${selected?.name} · approval ${reason}`,
-          });
         }}
       />
 
@@ -458,9 +510,13 @@ export function TariffsView() {
         confirmLabel="Archive version"
         reason={{ label: "Why is this version being archived?", required: true }}
         description="Archiving stops the version being applied to new sessions. It stays on file so historic charges remain explainable."
-        onConfirm={() => {
-          setTariffs((list) => list.filter((t) => t.id !== selected?.id));
-          toast.success("Version archived", { description: selected?.name });
+        onConfirm={async (reason) => {
+          if (!selected) return;
+          await apply(
+            () => tariffsApi.archive(selected.id, reason ?? "Archived from the portal"),
+            (list) => list.filter((t) => t.id !== selected.id),
+            { success: "Version archived", description: selected.name },
+          );
         }}
       />
 

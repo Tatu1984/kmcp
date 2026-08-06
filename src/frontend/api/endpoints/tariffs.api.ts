@@ -25,10 +25,41 @@ export interface Quote {
   waivedByPass: boolean;
 }
 
-export const tariffsApi = {
-  list: (query: Record<string, string | number | undefined> = {}) => api.get("/tariffs", { query }),
+export interface ApiTariff {
+  id: string;
+  name: string;
+  zoneId?: string | null;
+  vehicleTypeId: string;
+  baseAmount: number;
+  baseMinutes: number;
+  incrementAmount: number;
+  incrementMinutes: number;
+  dailyCapAmount?: number | null;
+  gracePeriodMin: number;
+  overstayPenalty?: number | null;
+  taxPercent: number;
+  effectiveFrom: string;
+  effectiveTo?: string | null;
+  isPublished: boolean;
+  version: number;
+  priority: number;
+  createdAt: string;
+  zone?: { id: string; code: string; name: string } | null;
+  vehicleType?: { id: string; code: SlotType; label: string } | null;
+  rules?: {
+    id: string;
+    type: string;
+    label?: string | null;
+    multiplier?: number | null;
+    flatAmount?: number | null;
+  }[];
+}
 
-  get: (id: string) => api.get(`/tariffs/${id}`),
+export const tariffsApi = {
+  list: (query: Record<string, string | number | undefined> = {}) =>
+    api.get<ApiTariff[]>("/tariffs", { query }),
+
+  get: (id: string) => api.get<ApiTariff>(`/tariffs/${id}`),
 
   /**
    * The fare preview. This calls the server rather than computing anything
