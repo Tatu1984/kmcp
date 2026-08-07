@@ -13,6 +13,7 @@ import {
   Laptop,
   Landmark,
   Percent,
+  Plus,
   Plug,
   Save,
   ShieldCheck,
@@ -125,18 +126,97 @@ export function SettingsView() {
 
   const permissionGroups = matrix.data?.groups ?? PERMISSION_GROUPS;
 
-  const permissions = React.useMemo<Record<string, Set<string>>>(() => {
-    const map: Record<string, Set<string>> = {};
-    for (const role of matrix.data?.roles ?? []) map[role.role] = new Set(role.permissions);
-    if (!matrix.data) {
-      // Demo fallback: everything the groups list, for the roles the portal knows.
-      const all = PERMISSION_GROUPS.flatMap((g) => g.permissions.map((p) => p.key));
-      for (const role of Object.values(ROLES) as Role[]) {
-        map[role] = new Set(role === "SUPER_ADMIN" ? all : []);
-      }
-    }
-    return map;
+  /** The roles to draw columns for, from the server where there is one. */
+  const matrixRoles = React.useMemo(() => {
+    if (matrix.data) return matrix.data.roles.filter((r) => r.code !== "CITIZEN");
+    // Demo fallback: the roles the portal knows, with the superuser unrestricted.
+    const all = PERMISSION_GROUPS.flatMap((g) => g.permissions.map((p) => p.key));
+    return (Object.values(ROLES) as Role[])
+      .filter((r) => r !== "CITIZEN")
+      .map((code) => ({
+        code,
+        label: ROLE_LABELS[code],
+        description: ROLE_DESCRIPTIONS[code] ?? null,
+        permissions: code === "SUPER_ADMIN" ? all : [],
+        unrestricted: code === "SUPER_ADMIN",
+        zoneScoped: false,
+        isSystem: true,
+        userCount: 0,
+        editable: code !== "SUPER_ADMIN",
+        deletable: false,
+      }));
   }, [matrix.data]);
+
+  /**
+   * Ticked boxes, held locally until saved.
+   *
+   * Seeded from the server and re-seeded whenever it answers again, so a save
+   * elsewhere is not silently overwritten by a stale draft on this screen.
+   */
+  const [draft, setDraft] = React.useState<Record<string, Set<string>>>({});
+  const [matrixKey, setMatrixKey] = React.useState<string | null>(null);
+  const serverKey = matrix.data ? JSON.stringify(matrix.data.roles.map((r) => [r.code, r.permissions])) : null;
+  if (serverKey && serverKey !== matrixKey) {
+    setMatrixKey(serverKey);
+    setDraft(Object.fromEntries(matrixRoles.map((r) => [r.code, new Set(r.permissions)])));
+  }
+
+  const permissions = React.useMemo<Record<string, Set<string>>>(() => {
+    if (Object.keys(draft).length > 0) return draft;
+    return Object.fromEntries(matrixRoles.map((r) => [r.code, new Set(r.permissions)]));
+  }, [draft, matrixRoles]);
+
+  const [savingRole, setSavingRole] = React.useState<string | null>(null);
+  const [newRoleOpen, setNewRoleOpen] = React.useState(false);
+  const [newRole, setNewRole] = React.useState({ code: "", label: "", description: "", zoneScoped: false });
+  const [deleteRoleOpen, setDeleteRoleOpen] = React.useState(false);
+  const [roleToDelete, setRoleToDelete] = React.useState<string | null>(null);
+
+  const togglePermission = (roleCode: string, key: string) => {
+    setDraft((prev) => {
+      const current = new Set(prev[roleCode] ?? permissions[roleCode] ?? []);
+      if (current.has(key)) current.delete(key);
+      else current.add(key);
+      return { ...prev, [roleCode]: current };
+    });
+  };
+
+  /** Sends the whole permission set for one role, which is what the API takes. */
+  const saveRole = async (roleCode: string) => {
+    if (!isLiveApi) {
+      toast.info("Saving roles needs the API", {
+        description: "Set NEXT_PUBLIC_API_URL to change permissions.",
+      });
+      return;
+    }
+    setSavingRole(roleCode);
+    try {
+      const { data } = await rbacApi.updateRole(roleCode, {
+        permissions: [...(permissions[roleCode] ?? [])],
+        reason: "Changed from the roles and access screen",
+      });
+      await matrix.refetch();
+      toast.success("Permissions updated", {
+        description: data.sessionsRevoked
+          ? `${data.sessionsRevoked} session(s) signed out so the change applies now.`
+          : "No one was signed in with this role.",
+      });
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : "Those permissions did not save.");
+    } finally {
+      setSavingRole(null);
+    }
+  };
+
+  const isRoleDirty = (roleCode: string) => {
+    const server = matrixRoles.find((r) => r.code === roleCode);
+    if (!server) return false;
+    const current = permissions[roleCode] ?? new Set<string>();
+    return (
+      current.size !== server.permissions.length ||
+      server.permissions.some((p) => !current.has(p))
+    );
+  };
 
   // The general/tax/notification tabs are still uncontrolled inputs rendered
   // from app.config defaults. Persisting them needs each field bound to a
@@ -590,16 +670,17 @@ export function SettingsView() {
                       <TableHeader>
                         <TableRow className="hover:bg-transparent">
                           <TableHead className="bg-muted/40 text-xs uppercase">Permission</TableHead>
-                          {(Object.values(ROLES) as Role[])
-                            .filter((r) => r !== "CITIZEN")
-                            .map((role) => (
-                              <TableHead
-                                key={role}
-                                className="bg-muted/40 text-center text-[10px] whitespace-nowrap uppercase"
-                              >
-                                {ROLE_LABELS[role].split(" ")[0]}
-                              </TableHead>
-                            ))}
+                          {matrixRoles.map((role) => (
+                            <TableHead
+                              key={role.code}
+                              className="bg-muted/40 text-center text-[10px] whitespace-nowrap uppercase"
+                            >
+                              {role.label.split(" ")[0]}
+                              {role.unrestricted && (
+                                <span className="ml-1 normal-case text-muted-foreground">(all)</span>
+                              )}
+                            </TableHead>
+                          ))}
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -611,22 +692,19 @@ export function SettingsView() {
                                 {permission.key}
                               </span>
                             </TableCell>
-                            {(Object.values(ROLES) as Role[])
-                              .filter((r) => r !== "CITIZEN")
-                              .map((role) => (
-                                <TableCell key={role} className="text-center">
-                                  <Checkbox
-                                    checked={permissions[role]?.has(permission.key) ?? false}
-                                    // Read-only on purpose. The matrix is code:
-                                    // reviewed, versioned and deployed. An
-                                    // editable copy here would let an admin
-                                    // believe they had changed something the
-                                    // server would carry on ignoring.
-                                    disabled
-                                    aria-label={`${permission.label} for ${ROLE_LABELS[role]}`}
-                                  />
-                                </TableCell>
-                              ))}
+                            {matrixRoles.map((role) => (
+                              <TableCell key={role.code} className="text-center">
+                                <Checkbox
+                                  checked={permissions[role.code]?.has(permission.key) ?? false}
+                                  // The superuser is unrestricted by definition;
+                                  // its boxes are shown ticked and locked rather
+                                  // than implying a list that means nothing.
+                                  disabled={!role.editable}
+                                  onCheckedChange={() => togglePermission(role.code, permission.key)}
+                                  aria-label={`${permission.label} for ${role.label}`}
+                                />
+                              </TableCell>
+                            ))}
                           </TableRow>
                         ))}
                       </TableBody>
@@ -635,22 +713,89 @@ export function SettingsView() {
                 </div>
               ))}
             </div>
-            <p className="mt-4 text-xs text-muted-foreground text-pretty">
-              Super Admin always holds every permission and cannot be restricted here — that is
-              deliberate, so an authority can never lock itself out of its own platform.
-            </p>
+            <div className="mt-4 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {matrixRoles
+                  .filter((role) => role.editable && isRoleDirty(role.code))
+                  .map((role) => (
+                    <Button
+                      key={role.code}
+                      size="sm"
+                      className="h-8"
+                      disabled={savingRole !== null}
+                      onClick={() => void saveRole(role.code)}
+                    >
+                      <Save className="size-3.5" />
+                      {savingRole === role.code ? "Saving…" : `Save ${role.label}`}
+                    </Button>
+                  ))}
+              </div>
+
+              <p className="text-xs text-muted-foreground text-pretty">
+                Super Admin always holds every permission and cannot be restricted here — that is
+                deliberate, so an authority can never lock itself out of its own platform. Saving a
+                role signs out everyone currently holding it, so a permission you remove stops
+                working immediately rather than whenever their session happens to expire.
+              </p>
+            </div>
           </SectionCard>
 
-          <SectionCard title="Role reference" contentClassName="p-0">
+          <SectionCard
+            title="Roles"
+            description="System roles cannot be removed — the platform refers to them by name"
+            contentClassName="p-0"
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setNewRoleOpen(true)}
+              >
+                <Plus className="size-3.5" /> New role
+              </Button>
+            }
+          >
             <ul className="divide-y divide-border/60">
-              {(Object.values(ROLES) as Role[]).map((role) => (
-                <li key={role} className="flex flex-wrap items-start gap-3 px-4 py-3">
+              {(matrix.data?.roles ?? matrixRoles).map((role) => (
+                <li key={role.code} className="flex flex-wrap items-start gap-3 px-4 py-3">
                   <Badge variant="secondary" className="shrink-0">
-                    {ROLE_LABELS[role]}
+                    {role.label}
                   </Badge>
+                  {!role.isSystem && (
+                    <Badge variant="outline" className="h-5 shrink-0 text-[10px]">
+                      custom
+                    </Badge>
+                  )}
                   <p className="min-w-0 flex-1 text-sm text-muted-foreground text-pretty">
-                    {ROLE_DESCRIPTIONS[role]}
+                    {role.description ?? "No description."}
                   </p>
+                  <span className="shrink-0 text-xs text-muted-foreground tabular">
+                    {role.userCount} {role.userCount === 1 ? "account" : "accounts"}
+                  </span>
+                  {role.deletable ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs text-destructive"
+                      onClick={() => {
+                        setRoleToDelete(role.code);
+                        setDeleteRoleOpen(true);
+                      }}
+                    >
+                      <Trash2 className="size-3.5" /> Delete
+                    </Button>
+                  ) : (
+                    <span
+                      className="shrink-0 text-[11px] text-muted-foreground"
+                      title={
+                        role.isSystem
+                          ? "A system role. The platform refers to it by name."
+                          : "Still held by at least one account."
+                      }
+                    >
+                      {role.isSystem ? "system" : "in use"}
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -983,6 +1128,101 @@ export function SettingsView() {
           </SectionCard>
         </TabsContent>
       </Tabs>
+
+      <ConfirmDialog
+        open={newRoleOpen}
+        onOpenChange={(open) => {
+          setNewRoleOpen(open);
+          if (!open) setNewRole({ code: "", label: "", description: "", zoneScoped: false });
+        }}
+        title="Create a role"
+        confirmLabel="Create role"
+        description={
+          <div className="space-y-3">
+            <p>
+              A new role starts with no permissions at all. Grant them in the matrix above and save,
+              which is safer than starting from a copy of something powerful.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="role-code">Code</Label>
+                <Input
+                  id="role-code"
+                  value={newRole.code}
+                  onChange={(e) =>
+                    setNewRole((r) => ({ ...r, code: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_") }))
+                  }
+                  placeholder="CASHIER"
+                  className="font-mono"
+                />
+                <p className="text-xs text-muted-foreground">Permanent. Used in the audit trail.</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="role-label">Name</Label>
+                <Input
+                  id="role-label"
+                  value={newRole.label}
+                  onChange={(e) => setNewRole((r) => ({ ...r, label: e.target.value }))}
+                  placeholder="Cashier"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="role-desc">What this role is for</Label>
+              <Input
+                id="role-desc"
+                value={newRole.description}
+                onChange={(e) => setNewRole((r) => ({ ...r, description: e.target.value }))}
+                placeholder="Counts cash at the depot and verifies deposits"
+              />
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <Checkbox
+                checked={newRole.zoneScoped}
+                onCheckedChange={(v) => setNewRole((r) => ({ ...r, zoneScoped: !!v }))}
+              />
+              <span className="text-muted-foreground">
+                Restrict this role to its assigned zones
+              </span>
+            </label>
+          </div>
+        }
+        onConfirm={async () => {
+          if (!isLiveApi) {
+            toast.info("Creating roles needs the API");
+            return;
+          }
+          if (newRole.code.length < 3 || newRole.label.trim().length < 2) {
+            toast.error("A role needs a code and a name");
+            throw new Error("incomplete");
+          }
+          await rbacApi.createRole({
+            code: newRole.code,
+            label: newRole.label.trim(),
+            description: newRole.description.trim() || undefined,
+            isZoneScoped: newRole.zoneScoped,
+          });
+          await matrix.refetch();
+          toast.success("Role created", { description: `${newRole.label} holds no permissions yet.` });
+          setNewRole({ code: "", label: "", description: "", zoneScoped: false });
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleteRoleOpen}
+        onOpenChange={setDeleteRoleOpen}
+        title={`Delete the ${roleToDelete} role?`}
+        destructive
+        confirmLabel="Delete role"
+        description="Only a role nobody holds can be deleted, so no one will be locked out. This is written to the audit trail."
+        onConfirm={async () => {
+          if (!roleToDelete) return;
+          await rbacApi.removeRole(roleToDelete);
+          await matrix.refetch();
+          toast.success("Role deleted", { description: roleToDelete });
+          setRoleToDelete(null);
+        }}
+      />
 
       <ConfirmDialog
         open={passwordOpen}

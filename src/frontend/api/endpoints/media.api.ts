@@ -1,5 +1,4 @@
 import { api } from "../client";
-import type { Role } from "@/shared/constants/roles";
 
 export type MediaPurpose =
   | "SESSION_EVIDENCE_START"
@@ -85,21 +84,55 @@ export async function uploadFile(file: File, purpose: MediaPurpose): Promise<Api
 
 /* --------------------------------------------------------------------- rbac */
 
+export interface RbacRole {
+  code: string;
+  label: string;
+  description: string | null;
+  permissions: string[];
+  unrestricted: boolean;
+  zoneScoped: boolean;
+  isSystem: boolean;
+  userCount: number;
+  /** False for the superuser, whose grants are unrestricted by definition. */
+  editable: boolean;
+  /** Only a non-system role nobody holds can be removed. */
+  deletable: boolean;
+}
+
 export interface RbacMatrix {
   permissions: string[];
   groups: { key: string; label: string; permissions: { key: string; label: string }[] }[];
-  roles: {
-    role: Role;
-    label: string;
-    description: string;
-    unrestricted: boolean;
-    permissions: string[];
-    zoneScoped: boolean;
-  }[];
+  roles: RbacRole[];
   ungrouped: string[];
   editable: boolean;
 }
 
 export const rbacApi = {
   matrix: () => api.get<RbacMatrix>("/rbac/matrix"),
+
+  createRole: (body: {
+    code: string;
+    label: string;
+    description?: string;
+    permissions?: string[];
+    isZoneScoped?: boolean;
+  }) => api.post<RbacRole>("/rbac/roles", body),
+
+  /**
+   * `permissions` replaces the whole list — the matrix sends the full set it
+   * wants rather than a diff, so two administrators editing at once cannot
+   * merge into a grant neither of them chose.
+   */
+  updateRole: (
+    code: string,
+    body: {
+      label?: string;
+      description?: string;
+      permissions?: string[];
+      isZoneScoped?: boolean;
+      reason?: string;
+    },
+  ) => api.patch<RbacRole & { sessionsRevoked: number }>(`/rbac/roles/${code}`, body),
+
+  removeRole: (code: string) => api.delete(`/rbac/roles/${code}`),
 };

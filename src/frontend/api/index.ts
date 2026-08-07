@@ -32,6 +32,6 @@ export type {
   ApiBanner,
 } from "./endpoints/master.api";
 export { mediaApi, uploadFile, rbacApi } from "./endpoints/media.api";
-export type { MediaPurpose, UploadTicket, ApiMedia, RbacMatrix } from "./endpoints/media.api";
+export type { MediaPurpose, UploadTicket, ApiMedia, RbacMatrix, RbacRole } from "./endpoints/media.api";
 export { sessionsApi } from "./endpoints/sessions.api";
 export type { ApiSession, PlateLookup } from "./endpoints/sessions.api";
