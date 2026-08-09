@@ -9,6 +9,8 @@ import {
   TooltipTrigger,
 } from "@/frontend/components/ui/tooltip";
 import { ZONES } from "@/frontend/lib/mock";
+import { zonesApi } from "@/frontend/api";
+import { useApiQuery } from "@/frontend/hooks/use-api";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatMoney, percent } from "@/shared/utils/common.util";
 
@@ -17,7 +19,26 @@ import { formatMoney, percent } from "@/shared/utils/common.util";
  * utilisation — so a big red tile is the zone that needs attention first.
  */
 export function OccupancyHeatMap() {
-  const zones = [...ZONES].sort((a, b) => b.capacity - a.capacity);
+  const query = useApiQuery(["zones", "heatmap"], () =>
+    zonesApi.list({ pageSize: 200 }).then((r) => r.data),
+  );
+
+  const zones = [...(query.data ?? ZONES)]
+    .map((zone) => ({
+      id: zone.id,
+      code: zone.code,
+      name: zone.name,
+      capacity: zone.capacity,
+      occupied: zone.occupied,
+      status: zone.status,
+      wardName: "wardName" in zone ? zone.wardName : (zone.ward?.name ?? "—"),
+      streetName: "streetName" in zone ? zone.streetName : (zone.street?.name ?? "—"),
+      closureReason: zone.closureReason ?? undefined,
+      // Only the demo set carries a revenue figure per zone; the tooltip omits
+      // it rather than showing ₹0 for a zone that simply was not asked about.
+      revenueToday: "revenueToday" in zone ? zone.revenueToday : undefined,
+    }))
+    .sort((a, b) => b.capacity - a.capacity);
 
   return (
     <div className="space-y-3">

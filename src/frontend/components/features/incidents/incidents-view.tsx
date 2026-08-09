@@ -40,20 +40,31 @@ import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, Plate } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
-import { INCIDENTS, ZONES } from "@/frontend/lib/mock";
+import { INCIDENTS } from "@/frontend/lib/mock";
+import { incidentsApi, usersApi } from "@/frontend/api";
+import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
+import { toIncident } from "@/frontend/lib/adapters";
 import { formatDateTime, relativeTime, titleCase } from "@/shared/utils/common.util";
 import type { Incident, IncidentStatus } from "@/shared/types/domain.types";
 
-const ASSIGNEES = [
-  "Zone Officer — Park Street",
-  "Zone Officer — Ballygunge",
-  "Zone Officer — Alipore",
-  "Enforcement Desk",
-  "Vendor Supervisor",
-];
-
 export function IncidentsView() {
-  const [incidents, setIncidents] = React.useState<Incident[]>(INCIDENTS);
+  const {
+    items: incidents,
+    isLoading,
+    emptyReason,
+    apply,
+  } = useResource<Incident>(
+    ["incidents", "list"],
+    () => incidentsApi.list({ pageSize: 200 }).then((r) => r.data.map(toIncident)),
+    INCIDENTS,
+  );
+
+  // Who an incident can be handed to. Real accounts, not a fixed list — the
+  // authority creates its own roles and officers.
+  const assignees = useApiQuery(["users", "assignable"], () =>
+    usersApi.list({ pageSize: 200, status: "ACTIVE" }).then((r) => r.data),
+  );
+
   const [selected, setSelected] = React.useState<Incident | null>(null);
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [rejectOpen, setRejectOpen] = React.useState(false);
@@ -65,16 +76,28 @@ export function IncidentsView() {
     setSheetOpen(true);
   };
 
-  const setStatus = (incident: Incident, status: IncidentStatus, message: string, resolution?: string) => {
-    setIncidents((list) =>
-      list.map((i) =>
-        i.id === incident.id
-          ? { ...i, status, resolutionNote: resolution ?? i.resolutionNote, resolvedAt: status === "RESOLVED" || status === "REJECTED" ? new Date().toISOString() : undefined }
-          : i,
-      ),
+  /** Applies a status change through the API, or to the demo copy without one. */
+  const close = (
+    incident: Incident,
+    status: Extract<IncidentStatus, "RESOLVED" | "REJECTED">,
+    text: string,
+  ) =>
+    apply(
+      () =>
+        status === "RESOLVED"
+          ? incidentsApi.resolve(incident.id, { resolutionNote: text })
+          : incidentsApi.reject(incident.id, { reason: text }),
+      (list) =>
+        list.map((i) =>
+          i.id === incident.id
+            ? { ...i, status, resolutionNote: text, resolvedAt: new Date().toISOString() }
+            : i,
+        ),
+      {
+        success: status === "RESOLVED" ? "Incident resolved" : "Incident rejected",
+        description: incident.reference,
+      },
     );
-    toast.success(message, { description: incident.reference });
-  };
 
   const columns = React.useMemo<ColumnDef<Incident, unknown>[]>(
     () => [
@@ -168,15 +191,24 @@ export function IncidentsView() {
                     icon: UserCheck,
                     hidden: closed,
                     separatorBefore: true,
-                    children: ASSIGNEES.map((assignee) => ({
-                      label: assignee,
+                    children: (assignees.data ?? []).slice(0, 12).map((assignee) => ({
+                      label: `${assignee.name} — ${titleCase(assignee.role)}`,
                       onSelect: () => {
-                        setIncidents((list) =>
-                          list.map((i) =>
-                            i.id === incident.id ? { ...i, assignedTo: assignee, status: "IN_PROGRESS" } : i,
-                          ),
-                        );
-                        toast.success("Incident assigned", { description: assignee });
+                        void apply(
+                          () => incidentsApi.assign(incident.id, { assignedTo: assignee.id }),
+                          (list) =>
+                            list.map((i) =>
+                              i.id === incident.id
+                                ? {
+                                    ...i,
+                                    assignedTo: assignee.name,
+                                    assignedToId: assignee.id,
+                                    status: "IN_PROGRESS" as const,
+                                  }
+                                : i,
+                            ),
+                          { success: "Incident assigned", description: assignee.name },
+                        ).catch(() => {});
                       },
                     })),
                   },
@@ -184,7 +216,16 @@ export function IncidentsView() {
                     label: "Mark in progress",
                     icon: Clock3,
                     hidden: closed || incident.status === "IN_PROGRESS",
-                    onSelect: () => setStatus(incident, "IN_PROGRESS", "Incident moved to in progress"),
+                    onSelect: () => {
+                      void apply(
+                        () => incidentsApi.start(incident.id),
+                        (list) =>
+                          list.map((i) =>
+                            i.id === incident.id ? { ...i, status: "IN_PROGRESS" as const } : i,
+                          ),
+                        { success: "Incident moved to in progress", description: incident.reference },
+                      ).catch(() => {});
+                    },
                   },
                   {
                     label: "Resolve",
@@ -210,7 +251,7 @@ export function IncidentsView() {
         },
       },
     ],
-    [],
+    [apply, assignees.data],
   );
 
   const counts = {
@@ -274,41 +315,46 @@ export function IncidentsView() {
           {
             columnId: "zoneName",
             label: "Zone",
-            options: ZONES.map((z) => ({ value: z.name, label: z.name })),
+            options: Array.from(new Set(incidents.map((i) => i.zoneName).filter((z) => z && z !== "—")))
+              .sort()
+              .map((value) => ({ value, label: value })),
           },
         ]}
         onRowClick={open}
         onExport={(rows) => toast.success("Export queued", { description: `${rows.length} incidents` })}
-        bulkActions={(rows, clear) => (
-          <>
+        bulkActions={(rows, clear) => {
+          const startable = rows.filter((r) => r.status === "OPEN");
+          return (
             <Button
               size="sm"
               variant="outline"
               className="h-7"
+              disabled={startable.length === 0}
               onClick={() => {
-                setIncidents((list) =>
-                  list.map((i) => (rows.some((r) => r.id === i.id) ? { ...i, status: "IN_PROGRESS" } : i)),
-                );
-                toast.success(`${rows.length} incidents moved to in progress`);
-                clear();
+                void apply(
+                  async () => {
+                    for (const incident of startable) await incidentsApi.start(incident.id);
+                  },
+                  (list) =>
+                    list.map((i) =>
+                      startable.some((r) => r.id === i.id) ? { ...i, status: "IN_PROGRESS" as const } : i,
+                    ),
+                  { success: `${startable.length} incidents moved to in progress` },
+                )
+                  .then(clear)
+                  .catch(() => {});
               }}
             >
               Mark in progress
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7"
-              onClick={() => {
-                toast.info("Assign to an officer", { description: `${rows.length} incidents selected` });
-              }}
-            >
-              Assign
-            </Button>
-          </>
-        )}
-        emptyTitle="No incidents"
-        emptyDescription="Nothing has been reported. Attendants and citizens can both raise incidents from their apps."
+          );
+        }}
+        isLoading={isLoading}
+        emptyTitle={emptyReason ? "Nothing to show" : "No incidents"}
+        emptyDescription={
+          emptyReason ??
+          "Nothing has been reported. Attendants and citizens can both raise incidents from their apps."
+        }
       />
 
       {/* ------------------------------------------------------ detail sheet */}
@@ -370,19 +416,43 @@ export function IncidentsView() {
                 <div className="space-y-1.5">
                   <Label htmlFor="assignee">Assign to</Label>
                   <Select
-                    value={selected.assignedTo ?? "__none"}
-                    onValueChange={(v) =>
-                      setSelected({ ...selected, assignedTo: v === "__none" ? undefined : v })
-                    }
+                    value={selected.assignedToId ?? "__none"}
+                    disabled={selected.status === "RESOLVED" || selected.status === "REJECTED"}
+                    onValueChange={(v) => {
+                      if (v === "__none") return;
+                      const assignee = (assignees.data ?? []).find((a) => a.id === v);
+                      if (!assignee) return;
+                      setSelected({
+                        ...selected,
+                        assignedTo: assignee.name,
+                        assignedToId: assignee.id,
+                        status: "IN_PROGRESS",
+                      });
+                      void apply(
+                        () => incidentsApi.assign(selected.id, { assignedTo: assignee.id }),
+                        (list) =>
+                          list.map((i) =>
+                            i.id === selected.id
+                              ? {
+                                  ...i,
+                                  assignedTo: assignee.name,
+                                  assignedToId: assignee.id,
+                                  status: "IN_PROGRESS" as const,
+                                }
+                              : i,
+                          ),
+                        { success: "Incident assigned", description: assignee.name },
+                      ).catch(() => {});
+                    }}
                   >
                     <SelectTrigger id="assignee">
                       <SelectValue placeholder="Unassigned" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__none">Unassigned</SelectItem>
-                      {ASSIGNEES.map((a) => (
-                        <SelectItem key={a} value={a}>
-                          {a}
+                      {(assignees.data ?? []).map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.name} — {titleCase(a.role)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -417,10 +487,13 @@ export function IncidentsView() {
                 </Button>
                 <Button
                   className="flex-1"
-                  disabled={note.trim().length < 4}
+                  // The API requires ten characters, so the button agrees rather
+                  // than letting the request bounce back as a validation error.
+                  disabled={note.trim().length < 10}
                   onClick={() => {
-                    setStatus(selected, "RESOLVED", "Incident resolved", note.trim());
-                    setSheetOpen(false);
+                    void close(selected, "RESOLVED", note.trim())
+                      .then(() => setSheetOpen(false))
+                      .catch(() => {});
                   }}
                 >
                   <CheckCircle2 className="size-4" /> Resolve
@@ -440,7 +513,7 @@ export function IncidentsView() {
         reason={{ label: "Why is this being rejected?", placeholder: "Duplicate report / no evidence / outside our jurisdiction…", required: true }}
         description="The reporter is told the report was reviewed and closed without action. The reason is recorded against your name."
         onConfirm={(reason) => {
-          if (selected) setStatus(selected, "REJECTED", "Incident rejected", reason);
+          if (selected) void close(selected, "REJECTED", (reason ?? "").trim()).catch(() => {});
         }}
       />
     </div>

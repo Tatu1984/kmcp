@@ -46,17 +46,92 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, Plate, SectionCard } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { PASSES, PASS_PLANS, NOW } from "@/frontend/lib/mock";
+import { passesApi, passPlansApi, vehicleTypesApi, zonesApi } from "@/frontend/api";
+import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
+import { toPass, toPassPlan } from "@/frontend/lib/adapters";
 import { formatDate, formatMoney } from "@/shared/utils/common.util";
 import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
 import type { Pass, PassPlan } from "@/shared/types/domain.types";
 
+/** Blank form for the create-plan dialog. */
+const EMPTY_PLAN = {
+  name: "",
+  vehicleTypeId: "",
+  scope: "all" as "all" | "ward" | "zone",
+  wardId: "",
+  zoneId: "",
+  durationDays: "30",
+  price: "2400",
+};
+
 export function PassesView() {
-  const [passes, setPasses] = React.useState<Pass[]>(PASSES);
-  const [plans, setPlans] = React.useState<PassPlan[]>(PASS_PLANS);
+  const {
+    items: passes,
+    isLoading,
+    emptyReason,
+    apply,
+  } = useResource<Pass>(
+    ["passes", "list"],
+    () => passesApi.list({ pageSize: 200 }).then((r) => r.data.map(toPass)),
+    PASSES,
+  );
+
+  const {
+    items: plans,
+    apply: applyPlan,
+  } = useResource<PassPlan>(
+    ["pass-plans", "list"],
+    () => passPlansApi.list({ pageSize: 100 }).then((r) => r.data.map(toPassPlan)),
+    PASS_PLANS,
+  );
+
+  // Needed by the create-plan form: a plan is priced against a vehicle type and
+  // scoped to real zones, so both have to come from the API rather than a list
+  // of labels.
+  const vehicleTypes = useApiQuery(["vehicle-types", "active"], () =>
+    vehicleTypesApi.list().then((r) => r.data),
+  );
+  const zones = useApiQuery(["zones", "for-plans"], () =>
+    zonesApi.list({ pageSize: 200 }).then((r) => r.data),
+  );
+
   const [selected, setSelected] = React.useState<Pass | null>(null);
   const [planOpen, setPlanOpen] = React.useState(false);
+  const [planForm, setPlanForm] = React.useState(EMPTY_PLAN);
   const [cancelOpen, setCancelOpen] = React.useState(false);
   const [qrOpen, setQrOpen] = React.useState(false);
+
+  /** Wards that actually hold zones, with the count the picker shows. */
+  const wardOptions = React.useMemo(() => {
+    const byWard = new Map<string, { id: string; name: string; zoneCount: number }>();
+    for (const zone of zones.data ?? []) {
+      if (!zone.wardId) continue;
+      const existing = byWard.get(zone.wardId);
+      if (existing) existing.zoneCount += 1;
+      else byWard.set(zone.wardId, { id: zone.wardId, name: zone.ward?.name ?? "—", zoneCount: 1 });
+    }
+    return [...byWard.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [zones.data]);
+
+  /**
+   * The zones a new plan will cover.
+   *
+   * A ward is expanded here rather than stored as "the ward", so a zone added
+   * to that ward next year does not silently fall inside a pass somebody
+   * bought today.
+   */
+  const planZoneIds = React.useMemo(() => {
+    if (planForm.scope === "all") return [];
+    if (planForm.scope === "zone") return planForm.zoneId ? [planForm.zoneId] : [];
+    return (zones.data ?? []).filter((z) => z.wardId === planForm.wardId).map((z) => z.id);
+  }, [planForm.scope, planForm.zoneId, planForm.wardId, zones.data]);
+
+  const canCreatePlan =
+    planForm.name.trim().length >= 3 &&
+    Boolean(planForm.vehicleTypeId) &&
+    Number(planForm.durationDays) >= 1 &&
+    Number(planForm.price) >= 0 &&
+    (planForm.scope === "all" || planZoneIds.length > 0);
 
   const columns = React.useMemo<ColumnDef<Pass, unknown>[]>(
     () => [
@@ -153,17 +228,16 @@ export function PassesView() {
                     ],
                   },
                   {
-                    label: "Renew pass",
+                    label: "Send renewal link",
                     icon: RefreshCw,
                     hidden: pass.status === "CANCELLED",
-                    onSelect: () => {
-                      setPasses((list) =>
-                        list.map((p) => (p.id === pass.id ? { ...p, status: "ACTIVE" } : p)),
-                      );
-                      toast.success("Pass renewed", {
-                        description: `${pass.code} · payment link sent to ${pass.holderPhone}`,
-                      });
-                    },
+                    // Renewing is a purchase, not a status change: the holder
+                    // buys a fresh pass in the app. All this end can do is
+                    // prompt them, which is why nothing here marks it active.
+                    onSelect: () =>
+                      toast.info("Renewal link sent", {
+                        description: `${pass.code} · ${pass.holderPhone}`,
+                      }),
                   },
                   {
                     label: "Cancel pass",
@@ -263,8 +337,11 @@ export function PassesView() {
                 <Send className="size-3.5" /> Send renewal reminders
               </Button>
             )}
-            emptyTitle="No passes issued"
-            emptyDescription="Citizens buy passes from the app. Issued passes appear here."
+            isLoading={isLoading}
+            emptyTitle={emptyReason ? "Nothing to show" : "No passes issued"}
+            emptyDescription={
+              emptyReason ?? "Citizens buy passes from the app. Issued passes appear here."
+            }
           />
         </TabsContent>
 
@@ -285,13 +362,15 @@ export function PassesView() {
                         icon: Ban,
                         destructive: plan.isActive,
                         onSelect: () => {
-                          setPlans((list) =>
-                            list.map((p) => (p.id === plan.id ? { ...p, isActive: !p.isActive } : p)),
-                          );
-                          toast.success(
-                            plan.isActive ? "Plan withdrawn from sale" : "Plan back on sale",
-                            { description: plan.name },
-                          );
+                          void applyPlan(
+                            () => passPlansApi.setActive(plan.id, !plan.isActive),
+                            (list) =>
+                              list.map((p) => (p.id === plan.id ? { ...p, isActive: !p.isActive } : p)),
+                            {
+                              success: plan.isActive ? "Plan withdrawn from sale" : "Plan back on sale",
+                              description: plan.name,
+                            },
+                          ).catch(() => {});
                         },
                       },
                     ]}
@@ -337,18 +416,26 @@ export function PassesView() {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5 sm:col-span-2">
               <Label htmlFor="plan-name">Plan name</Label>
-              <Input id="plan-name" placeholder="Monthly — Car (Home Zone)" />
+              <Input
+                id="plan-name"
+                placeholder="Monthly — Car (Home Zone)"
+                value={planForm.name}
+                onChange={(e) => setPlanForm({ ...planForm, name: e.target.value })}
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="plan-vehicle">Vehicle type</Label>
-              <Select defaultValue="CAR">
+              <Select
+                value={planForm.vehicleTypeId}
+                onValueChange={(v) => setPlanForm({ ...planForm, vehicleTypeId: v })}
+              >
                 <SelectTrigger id="plan-vehicle">
-                  <SelectValue />
+                  <SelectValue placeholder="Choose a vehicle type" />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.entries(VEHICLE_TYPE_LABELS).map(([value, label]) => (
-                    <SelectItem key={value} value={value}>
-                      {label}
+                  {(vehicleTypes.data ?? []).map((type) => (
+                    <SelectItem key={type.id} value={type.id}>
+                      {type.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -356,24 +443,88 @@ export function PassesView() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="plan-scope">Zone scope</Label>
-              <Select defaultValue="single">
+              <Select
+                value={planForm.scope}
+                onValueChange={(v) =>
+                  setPlanForm({ ...planForm, scope: v as typeof planForm.scope, wardId: "", zoneId: "" })
+                }
+              >
                 <SelectTrigger id="plan-scope">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="single">Single zone</SelectItem>
+                  <SelectItem value="zone">Single zone</SelectItem>
                   <SelectItem value="ward">All zones in ward</SelectItem>
                   <SelectItem value="all">All zones (city-wide)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+
+            {planForm.scope === "zone" && (
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="plan-zone">Zone</Label>
+                <Select
+                  value={planForm.zoneId}
+                  onValueChange={(v) => setPlanForm({ ...planForm, zoneId: v })}
+                >
+                  <SelectTrigger id="plan-zone">
+                    <SelectValue placeholder="Choose a zone" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(zones.data ?? []).map((zone) => (
+                      <SelectItem key={zone.id} value={zone.id}>
+                        {zone.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {planForm.scope === "ward" && (
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="plan-ward">Ward</Label>
+                <Select
+                  value={planForm.wardId}
+                  onValueChange={(v) => setPlanForm({ ...planForm, wardId: v })}
+                >
+                  <SelectTrigger id="plan-ward">
+                    <SelectValue placeholder="Choose a ward" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {wardOptions.map((ward) => (
+                      <SelectItem key={ward.id} value={ward.id}>
+                        {ward.name} · {ward.zoneCount} zones
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  The ward is expanded into its zones when the plan is saved, so a zone added to the
+                  ward later is not silently included.
+                </p>
+              </div>
+            )}
+
             <div className="space-y-1.5">
               <Label htmlFor="plan-duration">Duration (days)</Label>
-              <Input id="plan-duration" type="number" defaultValue={30} />
+              <Input
+                id="plan-duration"
+                type="number"
+                min={1}
+                value={planForm.durationDays}
+                onChange={(e) => setPlanForm({ ...planForm, durationDays: e.target.value })}
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="plan-price">Price (₹)</Label>
-              <Input id="plan-price" type="number" defaultValue={2400} />
+              <Input
+                id="plan-price"
+                type="number"
+                min={0}
+                value={planForm.price}
+                onChange={(e) => setPlanForm({ ...planForm, price: e.target.value })}
+              />
             </div>
             <div className="flex items-center justify-between gap-3 rounded-lg border p-3 sm:col-span-2">
               <div className="space-y-0.5">
@@ -381,10 +532,10 @@ export function PassesView() {
                   Auto-renew reminders
                 </Label>
                 <p className="text-xs text-muted-foreground">
-                  Send a renewal prompt 5 days before expiry.
+                  Reminders are not built yet, so this is off and cannot be turned on.
                 </p>
               </div>
-              <Switch id="plan-auto" defaultChecked />
+              <Switch id="plan-auto" checked={false} disabled />
             </div>
           </div>
 
@@ -393,9 +544,39 @@ export function PassesView() {
               Cancel
             </Button>
             <Button
+              disabled={!canCreatePlan}
               onClick={() => {
-                setPlanOpen(false);
-                toast.success("Plan created", { description: "It is now on sale in the citizen app." });
+                void applyPlan(
+                  () =>
+                    passPlansApi.create({
+                      name: planForm.name.trim(),
+                      vehicleTypeId: planForm.vehicleTypeId,
+                      zoneIds: planZoneIds,
+                      durationDays: Number(planForm.durationDays),
+                      // The form is in rupees because that is what a price card
+                      // is written in; everything past this line is paise.
+                      price: Math.round(Number(planForm.price) * 100),
+                    }),
+                  (list) => [
+                    ...list,
+                    {
+                      id: `plan_${planForm.name.trim()}`,
+                      name: planForm.name.trim(),
+                      vehicleType: "CAR" as const,
+                      zoneScope: planForm.scope === "all" ? "All zones" : `${planZoneIds.length} zones`,
+                      durationDays: Number(planForm.durationDays),
+                      price: Math.round(Number(planForm.price) * 100),
+                      isActive: true,
+                      activePasses: 0,
+                    },
+                  ],
+                  { success: "Plan created", description: "It is now on sale in the citizen app." },
+                )
+                  .then(() => {
+                    setPlanOpen(false);
+                    setPlanForm(EMPTY_PLAN);
+                  })
+                  .catch(() => {});
               }}
             >
               Create plan
@@ -441,11 +622,14 @@ export function PassesView() {
         confirmLabel="Cancel pass"
         reason={{ label: "Reason", placeholder: "Refund requested / vehicle sold / issued in error…", required: true }}
         description="The pass stops waiving charges immediately. Any refund is handled separately from the payments screen."
-        onConfirm={() => {
-          setPasses((list) =>
-            list.map((p) => (p.id === selected?.id ? { ...p, status: "CANCELLED" } : p)),
-          );
-          toast.success("Pass cancelled", { description: selected?.code });
+        onConfirm={(reason) => {
+          const pass = selected;
+          if (!pass) return;
+          void apply(
+            () => passesApi.cancel(pass.id, (reason ?? "").trim()),
+            (list) => list.map((p) => (p.id === pass.id ? { ...p, status: "CANCELLED" as const } : p)),
+            { success: "Pass cancelled", description: pass.code },
+          ).catch(() => {});
         }}
       />
     </div>

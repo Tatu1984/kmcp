@@ -38,14 +38,53 @@ import { RowActions } from "@/frontend/components/shared/row-actions";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, Plate, SectionCard, SplitMeter } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
-import { PAYMENTS, VENDORS, ZONES, DASHBOARD } from "@/frontend/lib/mock";
+import { PAYMENTS, DASHBOARD } from "@/frontend/lib/mock";
+import { paymentsApi, zonesApi, vendorsApi } from "@/frontend/api";
+import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
+import { toPayment } from "@/frontend/lib/adapters";
 import { formatDateTime, formatMoney } from "@/shared/utils/common.util";
 import { PAYMENT_MODE_LABELS } from "@/config/app.config";
 import { cn } from "@/lib/utils";
 import type { Payment } from "@/shared/types/domain.types";
 
 export function PaymentsView() {
-  const [payments, setPayments] = React.useState<Payment[]>(PAYMENTS);
+  const {
+    items: rows,
+    isLoading,
+    isBusy,
+    emptyReason,
+    apply,
+  } = useResource<Payment>(
+    ["payments", "list"],
+    () => paymentsApi.list({ pageSize: 200 }).then((r) => r.data.map((p) => toPayment(p))),
+    PAYMENTS,
+  );
+
+  // A payment knows its session's zone and vendor by id only. Both lists are
+  // small and cached, so one fetch each resolves every row.
+  const zones = useApiQuery(["zones", "names"], () =>
+    zonesApi.list({ pageSize: 200 }).then((r) => r.data),
+  );
+  const vendors = useApiQuery(["vendors", "names"], () =>
+    vendorsApi.list({ pageSize: 200 }).then((r) => r.data),
+  );
+
+  const payments = React.useMemo(() => {
+    const zoneNames = new Map((zones.data ?? []).map((z) => [z.id, z.name]));
+    const vendorNames = new Map((vendors.data ?? []).map((v) => [v.id, v.orgName]));
+    return rows.map((p) => ({
+      ...p,
+      zoneName: (p.zoneId && zoneNames.get(p.zoneId)) || p.zoneName,
+      vendorName: (p.vendorId && vendorNames.get(p.vendorId)) || p.vendorName,
+    }));
+  }, [rows, zones.data, vendors.data]);
+
+  // Totals across every payment, not merely the page in view — the stat cards
+  // would otherwise quietly under-report once collections pass the page size.
+  const summary = useApiQuery(["payments", "summary"], () =>
+    paymentsApi.summary().then((r) => r.data),
+  );
+
   const [selected, setSelected] = React.useState<Payment | null>(null);
   const [refundOpen, setRefundOpen] = React.useState(false);
   const [refundType, setRefundType] = React.useState<"full" | "partial">("full");
@@ -189,6 +228,18 @@ export function PaymentsView() {
                     ],
                   },
                   {
+                    label: "Issue receipt",
+                    icon: Receipt,
+                    hidden: Boolean(payment.receiptNumber) || payment.status !== "CAPTURED",
+                    onSelect: () => {
+                      void apply(
+                        () => paymentsApi.receipt(payment.id),
+                        (list) => list,
+                        { success: "Receipt issued", description: payment.sessionCode },
+                      ).catch(() => {});
+                    },
+                  },
+                  {
                     label: "Copy gateway ID",
                     icon: Copy,
                     hidden: !payment.gatewayPaymentId,
@@ -222,14 +273,34 @@ export function PaymentsView() {
         },
       },
     ],
-    [],
+    [apply],
   );
 
   const captured = payments.filter((p) => p.status === "CAPTURED");
   const failed = payments.filter((p) => p.status === "FAILED");
   const refunded = payments.filter((p) => p.status === "REFUNDED");
-  const cash = captured.filter((p) => p.mode === "CASH").reduce((s, p) => s + p.amount, 0);
-  const digital = captured.filter((p) => p.mode !== "CASH").reduce((s, p) => s + p.amount, 0);
+
+  // Prefer the server's totals; fall back to the rows in view when there is no
+  // API, so the demo still adds up.
+  const totals = summary.data;
+  const cash = totals?.cash ?? captured.filter((p) => p.mode === "CASH").reduce((s, p) => s + p.amount, 0);
+  const digital =
+    totals?.digital ?? captured.filter((p) => p.mode !== "CASH").reduce((s, p) => s + p.amount, 0);
+  const collected = totals?.collected ?? cash + digital;
+  const capturedCount = totals?.count ?? captured.length;
+  const refundedTotal = totals?.refunded ?? refunded.reduce((s, p) => s + p.refundedAmount, 0);
+  const cashShare = collected > 0 ? Math.round((cash / collected) * 100) : 0;
+
+  const upi =
+    totals?.byMode
+      .filter((m) => m.mode === "UPI_QR" || m.mode === "UPI_INTENT")
+      .reduce((s, m) => s + m.amount, 0) ?? DASHBOARD.upiCollection;
+
+  /** Facet options come from the rows themselves, so they always match the data. */
+  const facetOptions = (key: "zoneName" | "vendorName") =>
+    Array.from(new Set(payments.map((p) => p[key]).filter((v) => v && v !== "—")))
+      .sort()
+      .map((value) => ({ value, label: value }));
 
   const refundValue = refundType === "full" ? selected?.amount ?? 0 : Number(refundAmount) * 100;
   const canRefund = refundReason.trim().length > 3 && refundValue > 0 && refundValue <= (selected?.amount ?? 0);
@@ -243,16 +314,16 @@ export function PaymentsView() {
 
       <FadeStagger className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <FadeStaggerItem>
-          <StatCard label="Captured" value={<Money value={cash + digital} compact />} icon={TrendingUp} accent="success" hint={`${captured.length} payments`} />
+          <StatCard label="Captured" value={<Money value={collected} compact />} icon={TrendingUp} accent="success" hint={`${capturedCount} payments`} />
         </FadeStaggerItem>
         <FadeStaggerItem>
-          <StatCard label="Cash collected" value={<Money value={cash} compact />} icon={Banknote} hint={`${Math.round((cash / (cash + digital)) * 100)}% of collections`} />
+          <StatCard label="Cash collected" value={<Money value={cash} compact />} icon={Banknote} hint={`${cashShare}% of collections`} />
         </FadeStaggerItem>
         <FadeStaggerItem>
           <StatCard label="Failed" numeric={failed.length} icon={CircleAlert} accent={failed.length > 4 ? "danger" : "warning"} hint="Retry links sent automatically" />
         </FadeStaggerItem>
         <FadeStaggerItem>
-          <StatCard label="Refunded" numeric={refunded.length} icon={Undo2} accent="info" hint={<>{formatMoney(refunded.reduce((s, p) => s + p.refundedAmount, 0))} returned</>} />
+          <StatCard label="Refunded" numeric={refunded.length} icon={Undo2} accent="info" hint={<>{formatMoney(refundedTotal)} returned</>} />
         </FadeStaggerItem>
       </FadeStagger>
 
@@ -260,8 +331,8 @@ export function PaymentsView() {
         <SplitMeter
           segments={[
             { label: "Cash", value: cash, className: "bg-chart-3" },
-            { label: "UPI", value: DASHBOARD.upiCollection, className: "bg-chart-1" },
-            { label: "Other digital", value: Math.max(0, digital - DASHBOARD.upiCollection), className: "bg-chart-2" },
+            { label: "UPI", value: upi, className: "bg-chart-1" },
+            { label: "Other digital", value: Math.max(0, digital - upi), className: "bg-chart-2" },
           ]}
         />
       </SectionCard>
@@ -280,6 +351,7 @@ export function PaymentsView() {
               { value: "CAPTURED", label: "Captured" },
               { value: "FAILED", label: "Failed" },
               { value: "REFUNDED", label: "Refunded" },
+              { value: "PARTIALLY_REFUNDED", label: "Partially refunded" },
               { value: "PENDING", label: "Pending" },
             ],
           },
@@ -291,12 +363,12 @@ export function PaymentsView() {
           {
             columnId: "vendorName",
             label: "Vendor",
-            options: VENDORS.map((v) => ({ value: v.orgName, label: v.orgName })),
+            options: facetOptions("vendorName"),
           },
           {
             columnId: "zoneName",
             label: "Zone",
-            options: ZONES.map((z) => ({ value: z.name, label: z.name })),
+            options: facetOptions("zoneName"),
           },
         ]}
         onExport={(rows) =>
@@ -332,8 +404,12 @@ export function PaymentsView() {
             </Button>
           </>
         )}
-        emptyTitle="No payments yet"
-        emptyDescription="Collections appear the moment an attendant takes cash or a gateway webhook confirms a digital payment."
+        isLoading={isLoading}
+        emptyTitle={emptyReason ? "Nothing to show" : "No payments yet"}
+        emptyDescription={
+          emptyReason ??
+          "Collections appear the moment an attendant takes cash or a gateway webhook confirms a digital payment."
+        }
       />
 
       {/* ------------------------------------------------------------ refund */}
@@ -413,23 +489,43 @@ export function PaymentsView() {
             </Button>
             <Button
               variant="destructive"
-              disabled={!canRefund}
+              disabled={!canRefund || isBusy}
               onClick={() => {
-                setPayments((list) =>
-                  list.map((p) =>
-                    p.id === selected?.id
-                      ? {
-                          ...p,
-                          status: refundValue >= p.amount ? "REFUNDED" : "PARTIALLY_REFUNDED",
-                          refundedAmount: refundValue,
-                        }
-                      : p,
-                  ),
-                );
-                setRefundOpen(false);
-                toast.success("Refund initiated", {
-                  description: `${formatMoney(refundValue)} · ${refundReason}`,
-                });
+                const payment = selected;
+                if (!payment) return;
+                void apply(
+                  () =>
+                    paymentsApi.refund(payment.id, {
+                      // A full refund sends no amount at all, so the server
+                      // decides what is still refundable rather than trusting a
+                      // figure this screen worked out from a stale row.
+                      amount: refundType === "full" ? undefined : refundValue,
+                      reason: refundReason.trim(),
+                    }),
+                  (list) =>
+                    list.map((p) =>
+                      p.id === payment.id
+                        ? {
+                            ...p,
+                            status: refundValue >= p.amount
+                              ? ("REFUNDED" as const)
+                              : ("PARTIALLY_REFUNDED" as const),
+                            refundedAmount: refundValue,
+                          }
+                        : p,
+                    ),
+                  {
+                    success: "Refund initiated",
+                    description: `${formatMoney(refundValue)} · ${refundReason}`,
+                  },
+                )
+                  .then(() => {
+                    setRefundOpen(false);
+                    void summary.refetch();
+                  })
+                  // The error is already surfaced as a toast; keep the dialog
+                  // open so the reason does not have to be typed again.
+                  .catch(() => {});
               }}
             >
               Refund {formatMoney(refundValue)}

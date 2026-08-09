@@ -46,7 +46,15 @@ import { FadeStagger, FadeStaggerItem, Ticker } from "@/frontend/components/reac
 import { OccupancyChart, PaymentMixChart, RevenueChart } from "./charts";
 import { LiveActivityFeed } from "./live-feed";
 import { OccupancyHeatMap } from "./heat-map";
-import { DASHBOARD, TOP_ZONES, LOW_OCCUPANCY_ZONES, PAYMENTS } from "@/frontend/lib/mock";
+import {
+  DASHBOARD as DEMO_DASHBOARD,
+  TOP_ZONES as DEMO_TOP_ZONES,
+  LOW_OCCUPANCY_ZONES as DEMO_LOW_ZONES,
+  PAYMENTS,
+  ZONES,
+} from "@/frontend/lib/mock";
+import { analyticsApi, revenueApi, zonesApi } from "@/frontend/api";
+import { useApiQuery } from "@/frontend/hooks/use-api";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatMoney, percent } from "@/shared/utils/common.util";
 import { PAYMENT_MODE_LABELS } from "@/config/app.config";
@@ -65,10 +73,98 @@ export function DashboardView() {
 
   const rangeLabel = RANGES.find((r) => r.value === range)?.label ?? "Today";
 
+  const overview = useApiQuery(["analytics", "overview"], () =>
+    analyticsApi.overview().then((r) => r.data),
+  );
+  const hourly = useApiQuery(["analytics", "hourly"], () =>
+    analyticsApi.hourly().then((r) => r.data),
+  );
+  const daily = useApiQuery(["analytics", "daily", 30], () =>
+    analyticsApi.daily(30).then((r) => r.data),
+  );
+  const topZones = useApiQuery(["analytics", "top-zones"], () =>
+    analyticsApi.topZones(12).then((r) => r.data),
+  );
+  const revenue = useApiQuery(["revenue", "dashboard"], () =>
+    revenueApi.overview().then((r) => r.data),
+  );
+
+  /**
+   * Every counter on this screen, live or from the demo set.
+   *
+   * Named the same as the demo constant it replaces so the JSX below reads
+   * identically either way — the only difference is where the numbers came
+   * from, and that is decided here rather than at forty call sites.
+   */
+  const DASHBOARD = overview.data ?? DEMO_DASHBOARD;
+
+  const topZoneRows = topZones.data
+    ? topZones.data.map((z) => ({
+        id: z.id,
+        code: z.code,
+        name: z.name,
+        wardName: z.wardName ?? "—",
+        streetName: z.streetName ?? "—",
+        vendorName: z.vendorName ?? undefined,
+        capacity: z.capacity,
+        occupied: z.occupied,
+        openTime: z.openTime,
+        closeTime: z.closeTime,
+        revenueToday: z.revenueToday,
+      }))
+    : DEMO_TOP_ZONES.map((z) => ({
+        id: z.id,
+        code: z.code,
+        name: z.name,
+        wardName: z.wardName,
+        streetName: z.streetName,
+        vendorName: z.vendorName,
+        capacity: z.capacity,
+        occupied: z.occupied,
+        openTime: z.openTime,
+        closeTime: z.closeTime,
+        revenueToday: z.revenueToday ?? 0,
+      }));
+
+  // The quietest zones, by how full they are rather than by what they earned.
+  const lowOccupancyRows = topZones.data
+    ? [...topZoneRows]
+        .sort((a, b) => a.occupied / (a.capacity || 1) - b.occupied / (b.capacity || 1))
+        .slice(0, 6)
+    : DEMO_LOW_ZONES.map((z) => ({
+        id: z.id,
+        code: z.code,
+        name: z.name,
+        wardName: z.wardName,
+        streetName: z.streetName,
+        vendorName: z.vendorName,
+        capacity: z.capacity,
+        occupied: z.occupied,
+        openTime: z.openTime,
+        closeTime: z.closeTime,
+        revenueToday: z.revenueToday ?? 0,
+      }));
+
+  /**
+   * The authority's share of what came in, summed from each vendor's own
+   * commission rate rather than assumed to be one flat percentage.
+   */
+  const governmentShare = revenue.data
+    ? revenue.data.byVendor.reduce((s, v) => s + v.governmentShare, 0)
+    : Math.round(DEMO_DASHBOARD.vendorCollection * 0.19);
+
+  /** How many zones sit in each operating state. */
+  const allZones = useApiQuery(["zones", "status-counts"], () =>
+    zonesApi.list({ pageSize: 200 }).then((r) => r.data),
+  );
+  const zoneStatusCounts = React.useMemo(() => {
+    const source = allZones.data ?? ZONES;
+    const counts: Record<string, number> = {};
+    for (const zone of source) counts[zone.status] = (counts[zone.status] ?? 0) + 1;
+    return counts;
+  }, [allZones.data]);
+
   const paymentMix = React.useMemo(() => {
-    const captured = PAYMENTS.filter((p) => p.status === "CAPTURED");
-    const byMode = new Map<string, number>();
-    captured.forEach((p) => byMode.set(p.mode, (byMode.get(p.mode) ?? 0) + p.amount));
     const palette = [
       "var(--chart-1)",
       "var(--chart-2)",
@@ -77,7 +173,19 @@ export function DashboardView() {
       "var(--chart-5)",
       "color-mix(in oklch, var(--chart-1) 55%, var(--chart-5))",
     ];
-    return [...byMode.entries()]
+
+    const entries = revenue.data
+      ? revenue.data.byMode.map((m) => [m.mode, m.amount] as const)
+      : (() => {
+          const byMode = new Map<string, number>();
+          PAYMENTS.filter((p) => p.status === "CAPTURED").forEach((p) =>
+            byMode.set(p.mode, (byMode.get(p.mode) ?? 0) + p.amount),
+          );
+          return [...byMode.entries()];
+        })();
+
+    return entries
+      .filter(([, value]) => value > 0)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
       .map(([mode, value], i) => ({
@@ -85,13 +193,20 @@ export function DashboardView() {
         value,
         fill: palette[i % palette.length],
       }));
-  }, []);
+  }, [revenue.data]);
 
   async function refresh() {
     setRefreshing(true);
-    await new Promise((r) => setTimeout(r, 800));
+    // Refetch everything the screen shows, rather than pretending to.
+    await Promise.allSettled([
+      overview.refetch(),
+      hourly.refetch(),
+      daily.refetch(),
+      topZones.refetch(),
+      revenue.refetch(),
+    ]);
     setRefreshing(false);
-    toast.success("Dashboard refreshed", { description: "Live counters re-read from the cache." });
+    toast.success("Dashboard refreshed");
   }
 
   const revenueDelta = percent(
@@ -302,10 +417,10 @@ export function DashboardView() {
               <TabsTrigger value="revenue">Revenue</TabsTrigger>
             </TabsList>
             <TabsContent value="occupancy" className="mt-0">
-              <OccupancyChart />
+              <OccupancyChart data={hourly.data ?? undefined} />
             </TabsContent>
             <TabsContent value="revenue" className="mt-0">
-              <RevenueChart height={240} />
+              <RevenueChart height={240} data={daily.data ?? undefined} />
             </TabsContent>
           </Tabs>
         </SectionCard>
@@ -336,15 +451,16 @@ export function DashboardView() {
               </dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-muted-foreground">Vendor collection (month)</dt>
+              <dt className="text-muted-foreground">Collected (month)</dt>
               <dd>
-                <Money value={DASHBOARD.vendorCollection} compact />
+                <Money value={DASHBOARD.revenueMonth} compact />
               </dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-muted-foreground">Government share (month)</dt>
+              <dt className="text-muted-foreground">Government share</dt>
               <dd>
-                <Money value={Math.round(DASHBOARD.vendorCollection * 0.19)} compact />
+                {/* Each vendor's own commission rate, not a flat 19% guess. */}
+                <Money value={governmentShare} compact />
               </dd>
             </div>
           </dl>
@@ -367,7 +483,7 @@ export function DashboardView() {
           description="Cash and digital, day by day"
           action={<TrendingUp className="size-4 text-muted-foreground" />}
         >
-          <RevenueChart height={230} />
+          <RevenueChart height={230} data={daily.data ?? undefined} />
         </SectionCard>
       </div>
 
@@ -395,7 +511,7 @@ export function DashboardView() {
           contentClassName="p-0"
         >
           <ul className="divide-y divide-border/60">
-            {TOP_ZONES.map((zone, i) => (
+            {topZoneRows.slice(0, 6).map((zone, i) => (
               <li key={zone.id}>
                 <Link
                   href={ROUTES.zone(zone.id)}
@@ -426,7 +542,7 @@ export function DashboardView() {
           contentClassName="p-0"
         >
           <ul className="divide-y divide-border/60">
-            {LOW_OCCUPANCY_ZONES.map((zone) => (
+            {lowOccupancyRows.map((zone) => (
               <li key={zone.id}>
                 <Link
                   href={ROUTES.zone(zone.id)}
@@ -452,7 +568,8 @@ export function DashboardView() {
       <SectionCard title="Network status" description="Zones by operating state" contentClassName="p-4">
         <div className="flex flex-wrap gap-2">
           {(["OPEN", "MAINTENANCE", "EVENT_CLOSURE", "CLOSED"] as const).map((status) => {
-            const count = TOP_ZONES.concat(LOW_OCCUPANCY_ZONES).length;
+            // Was the same number under every badge. It is a real count now.
+            const count = zoneStatusCounts[status] ?? 0;
             return (
               <Link
                 key={status}

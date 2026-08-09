@@ -19,6 +19,9 @@ import { Label } from "@/frontend/components/ui/label";
 import { AnimatedList, AnimatedListItem } from "@/frontend/components/reactbits";
 import { Money } from "@/frontend/components/shared/bits";
 import { ACTIVITY_FEED } from "@/frontend/lib/mock";
+import { analyticsApi } from "@/frontend/api";
+import { useApiQuery } from "@/frontend/hooks/use-api";
+import { isLiveApi } from "@/config/env";
 import { relativeTime } from "@/shared/utils/common.util";
 import type { ActivityItem } from "@/shared/types/domain.types";
 
@@ -33,18 +36,40 @@ const KIND: Record<ActivityItem["kind"], { icon: LucideIcon; className: string }
 
 export function LiveActivityFeed() {
   const [live, setLive] = React.useState(true);
-  const [items, setItems] = React.useState<ActivityItem[]>(() => ACTIVITY_FEED.slice(0, 12));
+
+  // Against the API this polls for real events; the toggle stops the polling
+  // rather than merely hiding it. Without an API it replays the demo set, which
+  // is what keeps the offline walkthrough looking alive.
+  const feed = useApiQuery(
+    ["analytics", "feed"],
+    () => analyticsApi.feed(12).then((r) => r.data),
+    { refetchInterval: live ? 15_000 : false },
+  );
+
+  const [demoItems, setDemoItems] = React.useState<ActivityItem[]>(() => ACTIVITY_FEED.slice(0, 12));
   const cursor = React.useRef(12);
 
   React.useEffect(() => {
-    if (!live) return;
+    if (!live || isLiveApi) return;
     const timer = window.setInterval(() => {
       const next = ACTIVITY_FEED[cursor.current % ACTIVITY_FEED.length];
       cursor.current += 1;
-      setItems((list) => [{ ...next, id: `${next.id}-${cursor.current}` }, ...list].slice(0, 12));
+      setDemoItems((list) => [{ ...next, id: `${next.id}-${cursor.current}` }, ...list].slice(0, 12));
     }, 4200);
     return () => window.clearInterval(timer);
   }, [live]);
+
+  const items: ActivityItem[] = isLiveApi
+    ? (feed.data ?? []).map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        label: item.label,
+        detail: item.detail,
+        zoneName: item.zoneName,
+        amount: item.amount,
+        at: item.at,
+      }))
+    : demoItems;
 
   return (
     <div className="flex h-full flex-col">

@@ -36,14 +36,49 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, Money, PersonCell, Plate } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { CITIZENS, SESSIONS } from "@/frontend/lib/mock";
+import { citizensApi } from "@/frontend/api";
+import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
+import { toCitizen } from "@/frontend/lib/adapters";
+import { isLiveApi } from "@/config/env";
 import { formatDate, formatMoney, relativeTime } from "@/shared/utils/common.util";
 import type { Citizen } from "@/shared/types/domain.types";
 
 export function CitizensView() {
-  const [citizens, setCitizens] = React.useState<Citizen[]>(CITIZENS);
+  const {
+    items: citizens,
+    isLoading,
+    emptyReason,
+    apply,
+  } = useResource<Citizen>(
+    ["citizens", "list"],
+    () => citizensApi.list({ pageSize: 200 }).then((r) => r.data.map(toCitizen)),
+    CITIZENS,
+  );
   const [selected, setSelected] = React.useState<Citizen | null>(null);
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [blockOpen, setBlockOpen] = React.useState(false);
+
+  // The detail sheet needs the vehicles and parking history, which the list
+  // does not carry — fetched only once a citizen is actually opened.
+  const detail = useApiQuery(
+    ["citizens", "detail", selected?.id ?? ""],
+    () => citizensApi.get(selected!.id).then((r) => r.data),
+    { enabled: Boolean(selected?.id) && sheetOpen },
+  );
+
+  /** Blacklist, suspend or restore. */
+  const changeStatus = React.useCallback(
+    (citizen: Citizen, status: Citizen["status"], reason: string) =>
+      apply(
+        () => citizensApi.setStatus(citizen.id, status, reason),
+        (list) => list.map((c) => (c.id === citizen.id ? { ...c, status } : c)),
+        {
+          success: status === "BLACKLISTED" ? "Citizen blacklisted" : "Citizen restored",
+          description: citizen.name,
+        },
+      ),
+    [apply],
+  );
 
   const open = (citizen: Citizen) => {
     setSelected(citizen);
@@ -145,10 +180,11 @@ export function CitizensView() {
                     separatorBefore: true,
                     onSelect: () => {
                       if (citizen.status === "BLACKLISTED") {
-                        setCitizens((list) =>
-                          list.map((c) => (c.id === citizen.id ? { ...c, status: "ACTIVE" } : c)),
-                        );
-                        toast.success("Removed from blacklist", { description: citizen.name });
+                        void changeStatus(
+                          citizen,
+                          "ACTIVE",
+                          "Removed from blacklist from the portal",
+                        ).catch(() => {});
                       } else {
                         setSelected(citizen);
                         setBlockOpen(true);
@@ -162,7 +198,7 @@ export function CitizensView() {
         },
       },
     ],
-    [],
+    [changeStatus],
   );
 
   const active = citizens.filter((c) => c.status === "ACTIVE").length;
@@ -170,10 +206,31 @@ export function CitizensView() {
   const passHolders = citizens.filter((c) => c.hasActivePass).length;
   const totalSpent = citizens.reduce((s, c) => s + c.totalSpent, 0);
 
-  const citizenSessions = React.useMemo(
-    () => (selected ? SESSIONS.filter((s) => s.citizenName === selected.name).slice(0, 10) : []),
-    [selected],
-  );
+  /** Recent parking for the open citizen — from the API, or the demo set. */
+  const citizenSessions = React.useMemo(() => {
+    if (!selected) return [];
+    if (isLiveApi) {
+      return (detail.data?.sessions ?? []).slice(0, 10).map((session) => ({
+        id: session.id,
+        plateNumber: session.plateNumber,
+        zoneName: session.zone?.name ?? "—",
+        status: session.status,
+        payableAmount: session.payableAmount ?? undefined,
+      }));
+    }
+    return SESSIONS.filter((s) => s.citizenName === selected.name)
+      .slice(0, 10)
+      .map((s) => ({
+        id: s.id,
+        plateNumber: s.plateNumber,
+        zoneName: s.zoneName,
+        status: s.status,
+        payableAmount: s.payableAmount,
+      }));
+  }, [selected, detail.data]);
+
+  /** Their claimed vehicles, and whether each is blocked at the kerb. */
+  const citizenVehicles = isLiveApi ? (detail.data?.vehicles ?? []) : [];
 
   return (
     <div className="space-y-6">
@@ -241,8 +298,11 @@ export function CitizensView() {
             Send announcement
           </Button>
         )}
-        emptyTitle="No citizens registered"
-        emptyDescription="Citizens appear here after they sign up in the app with a mobile OTP."
+        isLoading={isLoading}
+        emptyTitle={emptyReason ? "Nothing to show" : "No citizens registered"}
+        emptyDescription={
+          emptyReason ?? "Citizens appear here after they sign up in the app with a mobile OTP."
+        }
       />
 
       {/* ------------------------------------------------------ detail sheet */}
@@ -291,6 +351,58 @@ export function CitizensView() {
                 </dl>
 
                 <Separator />
+
+                {citizenVehicles.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground">Vehicles</p>
+                    <ul className="divide-y divide-border/60 rounded-lg border">
+                      {citizenVehicles.map((vehicle) => (
+                        <li key={vehicle.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                          <Plate value={vehicle.plateNumber} />
+                          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                            {vehicle.vehicleType?.label ?? "—"}
+                            {vehicle.makeModel ? ` · ${vehicle.makeModel}` : ""}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant={vehicle.isBlacklisted ? "outline" : "ghost"}
+                            className="h-7 text-xs"
+                            onClick={() => {
+                              const citizen = selected;
+                              void apply(
+                                () =>
+                                  citizensApi.setVehicleBlacklist(
+                                    citizen.id,
+                                    vehicle.id,
+                                    !vehicle.isBlacklisted,
+                                    vehicle.isBlacklisted
+                                      ? "Cleared from the portal"
+                                      : "Blacklisted from the portal",
+                                  ),
+                                (list) => list,
+                                {
+                                  success: vehicle.isBlacklisted
+                                    ? "Plate cleared"
+                                    : "Plate blacklisted",
+                                  description: vehicle.plateNumber,
+                                },
+                              )
+                                .then(() => detail.refetch())
+                                .catch(() => {});
+                            }}
+                          >
+                            {vehicle.isBlacklisted ? "Clear plate" : "Blacklist plate"}
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-xs text-muted-foreground text-pretty">
+                      Blacklisting the account stops them using the app. It does not stop the car:
+                      an attendant types a plate and never sees an owner, so the plate has to be
+                      blocked here too.
+                    </p>
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <p className="text-xs font-medium text-muted-foreground">Recent parking</p>
@@ -353,11 +465,10 @@ export function CitizensView() {
         confirmLabel="Blacklist citizen"
         reason={{ label: "Reason", placeholder: "Repeated non-payment / abuse of an attendant / fraudulent disputes…", required: true }}
         description="They can no longer start sessions from the citizen app or buy passes. Attendants can still park their vehicle manually and charge it."
-        onConfirm={() => {
-          setCitizens((list) =>
-            list.map((c) => (c.id === selected?.id ? { ...c, status: "BLACKLISTED" } : c)),
-          );
-          toast.success("Citizen blacklisted", { description: selected?.name });
+        onConfirm={(reason) => {
+          if (selected) {
+            void changeStatus(selected, "BLACKLISTED", (reason ?? "").trim()).catch(() => {});
+          }
         }}
       />
     </div>

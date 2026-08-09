@@ -259,6 +259,9 @@ export interface Payment {
   id: string;
   sessionCode?: string;
   plateNumber?: string;
+  /** Carried so a screen can resolve the display name from a list it already has. */
+  zoneId?: string;
+  vendorId?: string;
   mode: PaymentMode;
   amount: Paise;
   status: PaymentStatus;
@@ -353,7 +356,9 @@ export interface Incident {
   description: string;
   photoCount: number;
   status: IncidentStatus;
+  /** Display name of the assignee; `assignedToId` is what a write sends back. */
   assignedTo?: string;
+  assignedToId?: string;
   resolutionNote?: string;
   createdAt: string;
   resolvedAt?: string;

@@ -32,26 +32,98 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, Money, Plate, SectionCard, SplitMeter } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SETTLEMENTS, VENDORS } from "@/frontend/lib/mock";
+import { settlementsApi, ApiError } from "@/frontend/api";
+import { useApiQuery, emptyReason } from "@/frontend/hooks/use-api";
+import { toSettlement } from "@/frontend/lib/adapters";
+import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatDate, formatDateTime, formatMoney } from "@/shared/utils/common.util";
 import { PAYMENT_MODE_LABELS } from "@/config/app.config";
 import type { Settlement } from "@/shared/types/domain.types";
 
 export function SettlementDetailView({ settlementId }: { settlementId: string }) {
-  const base = SETTLEMENTS.find((s) => s.id === settlementId)!;
-  const [settlement, setSettlement] = React.useState<Settlement>(base);
+  const query = useApiQuery(["settlements", "detail", settlementId], () =>
+    settlementsApi.get(settlementId).then((r) => r.data),
+  );
+
+  const [demo, setDemo] = React.useState<Settlement | undefined>(() =>
+    SETTLEMENTS.find((s) => s.id === settlementId),
+  );
   const [approveOpen, setApproveOpen] = React.useState(false);
   const [rejectOpen, setRejectOpen] = React.useState(false);
   const [payoutOpen, setPayoutOpen] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
 
-  const vendor = VENDORS.find((v) => v.id === settlement.vendorId);
+  const settlement = isLiveApi
+    ? query.data
+      ? toSettlement(query.data)
+      : undefined
+    : demo;
 
-  const ledger = [
-    { account: "GATEWAY_RECEIVABLE", debit: settlement.digitalCollected, credit: 0 },
-    { account: "CASH_IN_HAND", debit: settlement.cashCollected, credit: 0 },
-    { account: "VENDOR_PAYABLE", debit: 0, credit: settlement.vendorShare },
-    { account: "GOVERNMENT_REVENUE", debit: 0, credit: settlement.governmentShare },
-  ];
+  /** Runs a workflow step against the API, or edits the demo copy. */
+  const step = async (
+    call: () => Promise<unknown>,
+    patch: Partial<Settlement>,
+    message: string,
+  ) => {
+    if (!isLiveApi) {
+      setDemo((current) => (current ? { ...current, ...patch } : current));
+      toast.success(message);
+      return;
+    }
+    setBusy(true);
+    try {
+      await call();
+      await query.refetch();
+      toast.success(message);
+    } catch (error) {
+      toast.error(
+        error instanceof ApiError ? error.message : "That did not go through. Please try again.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!settlement) {
+    return (
+      <div className="grid min-h-64 place-items-center rounded-xl border border-dashed p-8 text-center">
+        <div className="space-y-1">
+          <p className="text-sm font-medium">
+            {isLiveApi && query.isLoading ? "Loading settlement…" : "Settlement not found"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {emptyReason(query.error ?? null, query.isLoading) ??
+              "It may have been removed, or the reference is wrong."}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const demoVendor = VENDORS.find((v) => v.id === settlement.vendorId);
+  const vendorBank = isLiveApi ? query.data?.vendor?.bankAccountNo : demoVendor?.bankAccountNo;
+  const commissionPct = isLiveApi
+    ? Number(query.data?.vendor?.commissionPct ?? 0)
+    : (demoVendor?.commissionPct ?? 0);
+
+  /**
+   * The postings, preferring the ones actually written.
+   *
+   * Before approval nothing has been posted, so what is shown is a preview of
+   * what approval will write. Afterwards it is the real thing — a screen that
+   * kept re-deriving them would agree with the ledger even if the ledger were
+   * wrong, which is the one job it has.
+   */
+  const posted = query.data?.ledger ?? [];
+  const ledger = posted.length
+    ? posted.map((entry) => ({ account: entry.account, debit: entry.debit, credit: entry.credit }))
+    : [
+        { account: "GATEWAY_RECEIVABLE", debit: settlement.digitalCollected, credit: 0 },
+        { account: "CASH_IN_HAND", debit: settlement.cashCollected, credit: 0 },
+        { account: "VENDOR_PAYABLE", debit: 0, credit: settlement.vendorShare },
+        { account: "GOVERNMENT_REVENUE", debit: 0, credit: settlement.governmentShare },
+      ];
   const totalDebit = ledger.reduce((s, l) => s + l.debit, 0);
   const totalCredit = ledger.reduce((s, l) => s + l.credit, 0);
 
@@ -73,12 +145,12 @@ export function SettlementDetailView({ settlementId }: { settlementId: string })
               <Download className="size-4" /> Statement
             </Button>
             {settlement.status === "PENDING_APPROVAL" && (
-              <Button size="sm" className="h-9" onClick={() => setApproveOpen(true)}>
+              <Button size="sm" className="h-9" disabled={busy} onClick={() => setApproveOpen(true)}>
                 <BadgeCheck className="size-4" /> Approve
               </Button>
             )}
             {settlement.status === "APPROVED" && (
-              <Button size="sm" className="h-9" onClick={() => setPayoutOpen(true)}>
+              <Button size="sm" className="h-9" disabled={busy} onClick={() => setPayoutOpen(true)}>
                 <Landmark className="size-4" /> Instruct payout
               </Button>
             )}
@@ -106,7 +178,7 @@ export function SettlementDetailView({ settlementId }: { settlementId: string })
           <StatCard label="Gross collected" value={<Money value={settlement.grossCollected} compact />} icon={Scale} hint={`${settlement.sessionsCount.toLocaleString("en-IN")} sessions`} />
         </FadeStaggerItem>
         <FadeStaggerItem>
-          <StatCard label="Commission" value={<Money value={settlement.commissionAmount} compact />} icon={Landmark} accent="info" hint={`${vendor?.commissionPct ?? 0}% of gross`} />
+          <StatCard label="Commission" value={<Money value={settlement.commissionAmount} compact />} icon={Landmark} accent="info" hint={`${commissionPct}% of gross`} />
         </FadeStaggerItem>
         <FadeStaggerItem>
           <StatCard label="Vendor share" value={<Money value={settlement.vendorShare} compact />} icon={Building2} accent="success" hint="Payable to the operator" />
@@ -190,9 +262,9 @@ export function SettlementDetailView({ settlementId }: { settlementId: string })
                   <Field label="Payout reference">
                     <span className="font-mono text-xs">{settlement.payoutRef ?? "—"}</span>
                   </Field>
-                  <Field label="Payout rail">RazorpayX</Field>
+                  <Field label="Payout rail">Bank transfer, recorded manually</Field>
                   <Field label="Bank account">
-                    <span className="font-mono text-xs">{vendor?.bankAccountNo ?? "—"}</span>
+                    <span className="font-mono text-xs">{vendorBank ?? "—"}</span>
                   </Field>
                 </dl>
               </SectionCard>
@@ -329,13 +401,11 @@ export function SettlementDetailView({ settlementId }: { settlementId: string })
           </span>
         }
         onConfirm={() => {
-          setSettlement({
-            ...settlement,
-            status: "APPROVED",
-            approvedBy: "Sudipta Banerjee (Deputy Commissioner)",
-            approvedAt: new Date().toISOString(),
-          });
-          toast.success("Settlement approved");
+          void step(
+            () => settlementsApi.approve(settlement.id),
+            { status: "APPROVED", approvedAt: new Date().toISOString() },
+            "Settlement approved",
+          );
         }}
       />
 
@@ -348,31 +418,35 @@ export function SettlementDetailView({ settlementId }: { settlementId: string })
         reason={{ label: "Why is this being rejected?", required: true }}
         description="The settlement returns to draft and the vendor is notified with your reason."
         onConfirm={(reason) => {
-          setSettlement({ ...settlement, status: "REJECTED", rejectionReason: reason });
-          toast.success("Settlement rejected");
+          void step(
+            () => settlementsApi.reject(settlement.id, (reason ?? "").trim()),
+            { status: "REJECTED", rejectionReason: reason },
+            "Settlement rejected",
+          );
         }}
       />
 
       <ConfirmDialog
         open={payoutOpen}
         onOpenChange={setPayoutOpen}
-        title="Instruct the payout?"
-        confirmLabel="Send to RazorpayX"
+        title="Record the payout?"
+        confirmLabel="Record payout"
         typeToConfirm="PAY"
+        reason={{ label: "Bank reference (UTR)", placeholder: "e.g. SBIN325019283746", required: true }}
         description={
           <span>
-            <span className="font-medium">{formatMoney(settlement.vendorShare)}</span> will be
-            transferred to {vendor?.bankAccountNo}. Payouts cannot be recalled once the bank accepts
-            them.
+            Records that <span className="font-medium">{formatMoney(settlement.vendorShare)}</span>{" "}
+            has been transferred to {vendorBank ?? "the registered account"}, and posts it against
+            the vendor payable. It does not move money — RazorpayX credentials are not configured,
+            so the transfer is made at the bank and its reference recorded here.
           </span>
         }
-        onConfirm={() => {
-          setSettlement({
-            ...settlement,
-            status: "PAID",
-            payoutRef: `pout_R${Math.floor(Math.random() * 1e8)}`,
-          });
-          toast.success("Payout instructed", { description: "Status updates from the webhook." });
+        onConfirm={(reference) => {
+          void step(
+            () => settlementsApi.payout(settlement.id, (reference ?? "").trim()),
+            { status: "PAID", payoutRef: reference },
+            "Payout recorded",
+          );
         }}
       />
     </div>

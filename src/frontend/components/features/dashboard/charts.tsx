@@ -31,10 +31,29 @@ const occupancyConfig = {
   sessions: { label: "Sessions started", color: "var(--chart-2)" },
 } satisfies ChartConfig;
 
-export function OccupancyChart() {
+/**
+ * Series come in as props so a chart can be fed real data or the demo set.
+ *
+ * Each defaults to the bundled series, which is what keeps the offline
+ * walkthrough working on a screen that has not been wired yet.
+ */
+export interface HourlyPoint {
+  hour: string;
+  occupancy: number;
+  sessions: number;
+}
+
+export interface DailyPoint {
+  label: string;
+  cash: number;
+  digital: number;
+  sessions: number;
+}
+
+export function OccupancyChart({ data = HOURLY_SERIES }: { data?: HourlyPoint[] }) {
   return (
     <ChartContainer config={occupancyConfig} className="h-[240px] w-full">
-      <AreaChart data={HOURLY_SERIES} margin={{ left: -18, right: 8, top: 8 }}>
+      <AreaChart data={data} margin={{ left: -18, right: 8, top: 8 }}>
         <defs>
           <linearGradient id="fillOccupancy" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor="var(--color-occupancy)" stopOpacity={0.35} />
@@ -81,10 +100,16 @@ const revenueConfig = {
   digital: { label: "Digital", color: "var(--chart-1)" },
 } satisfies ChartConfig;
 
-export function RevenueChart({ height = 260 }: { height?: number }) {
+export function RevenueChart({
+  height = 260,
+  data = DAILY_SERIES,
+}: {
+  height?: number;
+  data?: DailyPoint[];
+}) {
   return (
     <ChartContainer config={revenueConfig} className="w-full" style={{ height }}>
-      <BarChart data={DAILY_SERIES} margin={{ left: -6, right: 8, top: 8 }}>
+      <BarChart data={data} margin={{ left: -6, right: 8, top: 8 }}>
         <CartesianGrid vertical={false} strokeDasharray="3 3" opacity={0.35} />
         <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} minTickGap={22} fontSize={11} />
         <YAxis
@@ -149,10 +174,10 @@ const trendConfig = {
   sessions: { label: "Sessions", color: "var(--chart-2)" },
 } satisfies ChartConfig;
 
-export function SessionsTrendChart() {
+export function SessionsTrendChart({ data = DAILY_SERIES }: { data?: DailyPoint[] }) {
   return (
     <ChartContainer config={trendConfig} className="h-[200px] w-full">
-      <LineChart data={DAILY_SERIES} margin={{ left: -18, right: 8, top: 8 }}>
+      <LineChart data={data} margin={{ left: -18, right: 8, top: 8 }}>
         <CartesianGrid vertical={false} strokeDasharray="3 3" opacity={0.35} />
         <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} minTickGap={26} fontSize={11} />
         <YAxis tickLine={false} axisLine={false} fontSize={11} width={44} />

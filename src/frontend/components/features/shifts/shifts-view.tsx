@@ -31,12 +31,24 @@ import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, Money, SplitMeter } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
-import { SHIFTS, VENDORS } from "@/frontend/lib/mock";
+import { SHIFTS } from "@/frontend/lib/mock";
+import { shiftsApi } from "@/frontend/api";
+import { useResource } from "@/frontend/hooks/use-api";
+import { toShift } from "@/frontend/lib/adapters";
 import { formatDateTime, formatMoney, relativeTime } from "@/shared/utils/common.util";
 import type { Shift } from "@/shared/types/domain.types";
 
 export function ShiftsView() {
-  const [shifts, setShifts] = React.useState<Shift[]>(SHIFTS);
+  const {
+    items: shifts,
+    isLoading,
+    emptyReason,
+    apply,
+  } = useResource<Shift>(
+    ["shifts", "list"],
+    () => shiftsApi.list({ pageSize: 200 }).then((r) => r.data.map(toShift)),
+    SHIFTS,
+  );
   const [selected, setSelected] = React.useState<Shift | null>(null);
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [verifyOpen, setVerifyOpen] = React.useState(false);
@@ -226,33 +238,48 @@ export function ShiftsView() {
           {
             columnId: "vendorName",
             label: "Vendor",
-            options: VENDORS.map((v) => ({ value: v.orgName, label: v.orgName })),
+            options: Array.from(new Set(shifts.map((s) => s.vendorName).filter((v) => v && v !== "—")))
+              .sort()
+              .map((value) => ({ value, label: value })),
           },
         ]}
         onRowClick={open}
         onExport={(rows) => toast.success("Export queued", { description: `${rows.length} shifts` })}
-        bulkActions={(rows, clear) => (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7"
-            onClick={() => {
-              setShifts((list) =>
-                list.map((s) =>
-                  rows.some((r) => r.id === s.id) && s.status === "CLOSED"
-                    ? { ...s, status: "VERIFIED" }
-                    : s,
-                ),
-              );
-              toast.success(`${rows.length} shifts verified`);
-              clear();
-            }}
-          >
-            <BadgeCheck className="size-3.5" /> Verify deposits
-          </Button>
-        )}
-        emptyTitle="No shifts recorded"
-        emptyDescription="Shifts appear when an attendant checks in from the vendor app."
+        bulkActions={(rows, clear) => {
+          const verifiable = rows.filter((r) => r.status === "CLOSED" || r.status === "VARIANCE_FLAGGED");
+          return (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7"
+              disabled={verifiable.length === 0}
+              onClick={() => {
+                void apply(
+                  // Sequential, not concurrent: each verification is a separate
+                  // audited act against a named officer, and a half-applied
+                  // batch is easier to reason about than an interleaved one.
+                  async () => {
+                    for (const shift of verifiable) await shiftsApi.verify(shift.id);
+                  },
+                  (list) =>
+                    list.map((s) =>
+                      verifiable.some((r) => r.id === s.id) ? { ...s, status: "VERIFIED" as const } : s,
+                    ),
+                  { success: `${verifiable.length} shifts verified` },
+                )
+                  .then(clear)
+                  .catch(() => {});
+              }}
+            >
+              <BadgeCheck className="size-3.5" /> Verify deposits
+            </Button>
+          );
+        }}
+        isLoading={isLoading}
+        emptyTitle={emptyReason ? "Nothing to show" : "No shifts recorded"}
+        emptyDescription={
+          emptyReason ?? "Shifts appear when an attendant checks in from the vendor app."
+        }
       />
 
       {/* ------------------------------------------------------ detail sheet */}
@@ -380,10 +407,13 @@ export function ShiftsView() {
           </span>
         }
         onConfirm={() => {
-          setShifts((list) =>
-            list.map((s) => (s.id === selected?.id ? { ...s, status: "VERIFIED" } : s)),
-          );
-          toast.success("Deposit verified", { description: selected?.attendantName });
+          const shift = selected;
+          if (!shift) return;
+          void apply(
+            () => shiftsApi.verify(shift.id),
+            (list) => list.map((s) => (s.id === shift.id ? { ...s, status: "VERIFIED" as const } : s)),
+            { success: "Deposit verified", description: shift.attendantName },
+          ).catch(() => {});
         }}
       />
 
