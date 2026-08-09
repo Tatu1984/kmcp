@@ -1,7 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 const PUBLIC_PATHS = ["/login", "/forgot-password", "/two-factor"];
-const PUBLIC_API = ["/api/v1/auth", "/api/v1/public", "/api/v1/webhooks", "/api/v1/health"];
+const PUBLIC_API = [
+  "/api/v1/auth",
+  "/api/v1/public",
+  "/api/v1/webhooks",
+  "/api/v1/health",
+  // The portal's own liveness route. CI reads it to confirm what is deployed,
+  // and CI holds no bearer token.
+  "/api/health",
+];
 
 /**
  * Edge middleware: request correlation, auth gate and RBAC pre-check.
