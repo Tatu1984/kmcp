@@ -428,7 +428,7 @@ export function AttendantsView() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="att-vendor">Vendor</Label>
-              <Select defaultValue={selected?.vendorId ?? VENDORS[0].id}>
+              <Select defaultValue={selected?.vendorId ?? vendorOptions[0]?.id}>
                 <SelectTrigger id="att-vendor">
                   <SelectValue />
                 </SelectTrigger>
@@ -443,7 +443,7 @@ export function AttendantsView() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="att-zone">Default zone</Label>
-              <Select defaultValue={selected?.zoneId ?? ZONES[0].id}>
+              <Select defaultValue={selected?.zoneId ?? zoneOptions[0]?.id}>
                 <SelectTrigger id="att-zone">
                   <SelectValue />
                 </SelectTrigger>

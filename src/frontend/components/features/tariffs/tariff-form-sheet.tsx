@@ -26,6 +26,9 @@ import {
 } from "@/frontend/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/frontend/components/ui/tabs";
 import { ZONES } from "@/frontend/lib/mock";
+import { zonesApi } from "@/frontend/api";
+import { useApiQuery } from "@/frontend/hooks/use-api";
+import { isLiveApi } from "@/config/env";
 import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
 import { formatMoney, titleCase } from "@/shared/utils/common.util";
 import type { Tariff, TariffRule, TariffRuleType, DayType } from "@/shared/types/domain.types";
@@ -57,6 +60,20 @@ export function TariffFormSheet({
   const editing = Boolean(tariff);
   const locked = Boolean(tariff?.isPublished);
   const [busy, setBusy] = React.useState(false);
+
+  /**
+   * Zones come from the API. A zone id chosen here is sent to the server, and
+   * an id from the demo dataset does not exist there — the same foreign-key
+   * failure that made saving a zone return an unexplained 422.
+   */
+  const zones = useApiQuery(["zones", "for-tariff-form"], () =>
+    zonesApi.list({ pageSize: 100 }).then((r) => r.data),
+  );
+  const zoneOptions = (zones.data ?? (isLiveApi ? [] : ZONES)).map((z) => ({
+    id: z.id,
+    code: z.code,
+    name: z.name,
+  }));
   const [form, setForm] = React.useState(() => defaults(tariff));
   const [rules, setRules] = React.useState<TariffRule[]>(tariff?.rules ?? []);
 
@@ -374,7 +391,7 @@ export function TariffFormSheet({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__all">All zones (city-wide)</SelectItem>
-                  {ZONES.map((z) => (
+                  {zoneOptions.map((z) => (
                     <SelectItem key={z.id} value={z.id}>
                       {z.code} · {z.name}
                     </SelectItem>

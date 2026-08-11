@@ -28,6 +28,9 @@ import {
 } from "@/frontend/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/frontend/components/ui/tabs";
 import { WARDS, VENDORS } from "@/frontend/lib/mock";
+import { geographyApi, vendorsApi } from "@/frontend/api";
+import { useApiQuery } from "@/frontend/hooks/use-api";
+import { isLiveApi } from "@/config/env";
 import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
 import type { Zone, SlotType } from "@/shared/types/domain.types";
 import { cn } from "@/lib/utils";
@@ -58,6 +61,29 @@ export function ZoneFormSheet({
 }) {
   const editing = Boolean(zone);
   const [busy, setBusy] = React.useState(false);
+
+  /**
+   * Wards and vendors come from the API, never from the demo dataset.
+   *
+   * Both ids are sent straight to the server, and a demo id does not exist
+   * there — which surfaced as an unexplained 422 on save, because the database
+   * rejected the foreign key rather than the form rejecting the choice.
+   */
+  const wards = useApiQuery(["wards", "for-zone-form"], () =>
+    geographyApi.wards({ pageSize: 100 }).then((r) => r.data),
+  );
+  const vendors = useApiQuery(["vendors", "for-zone-form"], () =>
+    vendorsApi.list({ pageSize: 100, status: "APPROVED" }).then((r) => r.data),
+  );
+
+  const wardOptions = (wards.data ?? (isLiveApi ? [] : WARDS)).map((w) => ({
+    id: w.id,
+    code: w.code,
+    name: w.name,
+  }));
+  const vendorOptions = (
+    vendors.data ?? (isLiveApi ? [] : VENDORS.filter((v) => v.status === "APPROVED"))
+  ).map((v) => ({ id: v.id, orgName: v.orgName, commissionPct: Number(v.commissionPct ?? 0) }));
   const [form, setForm] = React.useState(() => defaults(zone));
 
   // Reset while rendering when the sheet opens on a different zone — the
@@ -161,7 +187,7 @@ export function ZoneFormSheet({
                     <SelectValue placeholder="Select a ward" />
                   </SelectTrigger>
                   <SelectContent>
-                    {WARDS.map((w) => (
+                    {wardOptions.map((w) => (
                       <SelectItem key={w.id} value={w.id}>
                         {w.code} · {w.name}
                       </SelectItem>
@@ -191,7 +217,7 @@ export function ZoneFormSheet({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none">Unassigned</SelectItem>
-                  {VENDORS.filter((v) => v.status === "APPROVED").map((v) => (
+                  {vendorOptions.map((v) => (
                     <SelectItem key={v.id} value={v.id}>
                       {v.orgName} · {v.commissionPct}% commission
                     </SelectItem>
@@ -409,7 +435,7 @@ function defaults(zone?: Zone | null) {
   return {
     code: zone?.code ?? "",
     name: zone?.name ?? "",
-    wardId: zone?.wardId ?? WARDS[0].id,
+    wardId: zone?.wardId ?? "",
     streetName: zone?.streetName ?? "",
     vendorId: zone?.vendorId,
     capacity: zone?.capacity ?? 60,
