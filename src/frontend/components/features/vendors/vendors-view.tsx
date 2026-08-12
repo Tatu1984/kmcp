@@ -41,7 +41,7 @@ import { Money, PersonCell } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { VendorFormSheet } from "./vendor-form-sheet";
 import { VENDORS, DASHBOARD } from "@/frontend/lib/mock";
-import { vendorsApi } from "@/frontend/api";
+import { vendorsApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
 import { toVendor } from "@/frontend/lib/adapters";
 import { ROUTES } from "@/shared/constants/routes";
@@ -74,7 +74,7 @@ export function VendorsView() {
     apply,
   } = useResource<Vendor>(
     ["vendors", "list"],
-    () => vendorsApi.list({ pageSize: 200 }).then((r) => r.data.map(toVendor)),
+    () => listAll((page, pageSize) => vendorsApi.list({ page, pageSize })).then((r) => r.map(toVendor)),
     VENDORS,
   );
   const [selected, setSelected] = React.useState<Vendor | null>(null);

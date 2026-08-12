@@ -68,8 +68,19 @@ export function useResource<T>(
       setBusy(true);
       try {
         await live();
-        await query.refetch();
-        if (messages?.success) toast.success(messages.success, { description: messages.description });
+        const reloaded = await query.refetch();
+        if (reloaded.error) {
+          /**
+           * The write went through; only the reload after it did not. Reporting
+           * plain success here is what makes a good save look like a lost one —
+           * the toast says "created" and the row is nowhere in the table.
+           */
+          toast.warning(messages?.success ?? "Saved", {
+            description: "The list could not be reloaded. Refresh the page to see the change.",
+          });
+        } else if (messages?.success) {
+          toast.success(messages.success, { description: messages.description });
+        }
       } catch (error) {
         toast.error(
           error instanceof ApiError ? error.message : "That did not go through. Please try again.",

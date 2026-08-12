@@ -46,7 +46,7 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, Plate, SectionCard } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { PASSES, PASS_PLANS, NOW } from "@/frontend/lib/mock";
-import { passesApi, passPlansApi, vehicleTypesApi, zonesApi } from "@/frontend/api";
+import { passesApi, passPlansApi, vehicleTypesApi, zonesApi, listAll } from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
 import { toPass, toPassPlan } from "@/frontend/lib/adapters";
 import { formatDate, formatMoney } from "@/shared/utils/common.util";
@@ -72,7 +72,7 @@ export function PassesView() {
     apply,
   } = useResource<Pass>(
     ["passes", "list"],
-    () => passesApi.list({ pageSize: 200 }).then((r) => r.data.map(toPass)),
+    () => listAll((page, pageSize) => passesApi.list({ page, pageSize })).then((r) => r.map(toPass)),
     PASSES,
   );
 
@@ -92,7 +92,7 @@ export function PassesView() {
     vehicleTypesApi.list().then((r) => r.data),
   );
   const zones = useApiQuery(["zones", "for-plans"], () =>
-    zonesApi.list({ pageSize: 200 }).then((r) => r.data),
+    listAll((page, pageSize) => zonesApi.list({ page, pageSize })),
   );
 
   const [selected, setSelected] = React.useState<Pass | null>(null);

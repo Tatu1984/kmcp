@@ -46,7 +46,7 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, PersonCell } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { ATTENDANTS, VENDORS, ZONES } from "@/frontend/lib/mock";
-import { attendantsApi, vendorsApi, zonesApi } from "@/frontend/api";
+import { attendantsApi, vendorsApi, zonesApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
 import { toAttendant } from "@/frontend/lib/adapters";
 import type { Attendant } from "@/shared/types/domain.types";
@@ -59,7 +59,10 @@ export function AttendantsView() {
     apply,
   } = useResource<Attendant>(
     ["attendants", "list"],
-    () => attendantsApi.list({ pageSize: 300 }).then((r) => r.data.map(toAttendant)),
+    () =>
+      listAll((page, pageSize) => attendantsApi.list({ page, pageSize })).then((r) =>
+        r.map(toAttendant),
+      ),
     ATTENDANTS,
   );
 
@@ -75,9 +78,9 @@ export function AttendantsView() {
   const { items: zoneOptions } = useResource<{ id: string; code: string; name: string }>(
     ["zones", "picker"],
     () =>
-      zonesApi
-        .list({ pageSize: 200 })
-        .then((r) => r.data.map((z) => ({ id: z.id, code: z.code, name: z.name }))),
+      listAll((page, pageSize) => zonesApi.list({ page, pageSize })).then((r) =>
+        r.map((z) => ({ id: z.id, code: z.code, name: z.name })),
+      ),
     ZONES.map((z) => ({ id: z.id, code: z.code, name: z.name })),
   );
   const [selected, setSelected] = React.useState<Attendant | null>(null);

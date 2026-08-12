@@ -9,7 +9,7 @@ import {
   TooltipTrigger,
 } from "@/frontend/components/ui/tooltip";
 import { ZONES } from "@/frontend/lib/mock";
-import { zonesApi } from "@/frontend/api";
+import { zonesApi, listAll } from "@/frontend/api";
 import { useApiQuery } from "@/frontend/hooks/use-api";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatMoney, percent } from "@/shared/utils/common.util";
@@ -20,7 +20,7 @@ import { formatMoney, percent } from "@/shared/utils/common.util";
  */
 export function OccupancyHeatMap() {
   const query = useApiQuery(["zones", "heatmap"], () =>
-    zonesApi.list({ pageSize: 200 }).then((r) => r.data),
+    listAll((page, pageSize) => zonesApi.list({ page, pageSize })),
   );
 
   const zones = [...(query.data ?? ZONES)]

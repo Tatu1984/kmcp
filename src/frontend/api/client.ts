@@ -210,3 +210,34 @@ export const api = {
   /** Unwraps the envelope for callers that do not need pagination meta. */
   data: async <T>(promise: Promise<ApiResult<T>>): Promise<T> => (await promise).data,
 };
+
+/**
+ * Every row of a list endpoint, fetched a page at a time.
+ *
+ * The API refuses a `pageSize` above `API_CONFIG.maxPageSize` — and refuses it
+ * by rejecting the whole request, not by returning fewer rows. A screen that
+ * asked for 200 in one go therefore showed nothing at all, which read as a lost
+ * write: the create returned 201, the reload 400, and the new row never
+ * appeared. Ask for pages the API will actually serve instead.
+ *
+ * `limit` is the point at which a screen stops asking. It exists so a table
+ * that is only ever scanned by eye cannot walk a hundred thousand rows.
+ */
+export async function listAll<T>(
+  fetchPage: (page: number, pageSize: number) => Promise<ApiResult<T[]>>,
+  limit = 1000,
+): Promise<T[]> {
+  const pageSize = Math.min(API_CONFIG.maxPageSize, limit);
+  const rows: T[] = [];
+
+  for (let page = 1; rows.length < limit; page++) {
+    const result = await fetchPage(page, pageSize);
+    rows.push(...result.data);
+    // A short page is the last page. `total` ends it one request earlier when
+    // the endpoint reports one.
+    if (result.data.length < pageSize) break;
+    if (result.meta.total !== undefined && rows.length >= result.meta.total) break;
+  }
+
+  return rows.length > limit ? rows.slice(0, limit) : rows;
+}

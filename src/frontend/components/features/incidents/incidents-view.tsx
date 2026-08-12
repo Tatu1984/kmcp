@@ -41,7 +41,7 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, Plate } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { INCIDENTS } from "@/frontend/lib/mock";
-import { incidentsApi, usersApi } from "@/frontend/api";
+import { incidentsApi, usersApi, listAll } from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
 import { toIncident } from "@/frontend/lib/adapters";
 import { formatDateTime, relativeTime, titleCase } from "@/shared/utils/common.util";
@@ -55,14 +55,17 @@ export function IncidentsView() {
     apply,
   } = useResource<Incident>(
     ["incidents", "list"],
-    () => incidentsApi.list({ pageSize: 200 }).then((r) => r.data.map(toIncident)),
+    () =>
+      listAll((page, pageSize) => incidentsApi.list({ page, pageSize })).then((r) =>
+        r.map(toIncident),
+      ),
     INCIDENTS,
   );
 
   // Who an incident can be handed to. Real accounts, not a fixed list — the
   // authority creates its own roles and officers.
   const assignees = useApiQuery(["users", "assignable"], () =>
-    usersApi.list({ pageSize: 200, status: "ACTIVE" }).then((r) => r.data),
+    listAll((page, pageSize) => usersApi.list({ page, pageSize, status: "ACTIVE" })),
   );
 
   const [selected, setSelected] = React.useState<Incident | null>(null);

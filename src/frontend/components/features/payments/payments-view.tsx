@@ -39,7 +39,7 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, Plate, SectionCard, SplitMeter } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { PAYMENTS, DASHBOARD } from "@/frontend/lib/mock";
-import { paymentsApi, zonesApi, vendorsApi } from "@/frontend/api";
+import { paymentsApi, zonesApi, vendorsApi, listAll } from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
 import { toPayment } from "@/frontend/lib/adapters";
 import { formatDateTime, formatMoney } from "@/shared/utils/common.util";
@@ -56,17 +56,20 @@ export function PaymentsView() {
     apply,
   } = useResource<Payment>(
     ["payments", "list"],
-    () => paymentsApi.list({ pageSize: 200 }).then((r) => r.data.map((p) => toPayment(p))),
+    () =>
+      listAll((page, pageSize) => paymentsApi.list({ page, pageSize })).then((r) =>
+        r.map((p) => toPayment(p)),
+      ),
     PAYMENTS,
   );
 
   // A payment knows its session's zone and vendor by id only. Both lists are
   // small and cached, so one fetch each resolves every row.
   const zones = useApiQuery(["zones", "names"], () =>
-    zonesApi.list({ pageSize: 200 }).then((r) => r.data),
+    listAll((page, pageSize) => zonesApi.list({ page, pageSize })),
   );
   const vendors = useApiQuery(["vendors", "names"], () =>
-    vendorsApi.list({ pageSize: 200 }).then((r) => r.data),
+    listAll((page, pageSize) => vendorsApi.list({ page, pageSize })),
   );
 
   const payments = React.useMemo(() => {

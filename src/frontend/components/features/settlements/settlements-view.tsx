@@ -43,7 +43,7 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SETTLEMENTS, VENDORS } from "@/frontend/lib/mock";
-import { settlementsApi, vendorsApi } from "@/frontend/api";
+import { settlementsApi, vendorsApi, listAll } from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
 import { toSettlement } from "@/frontend/lib/adapters";
 import { ROUTES } from "@/shared/constants/routes";
@@ -71,12 +71,15 @@ export function SettlementsView() {
     apply,
   } = useResource<Settlement>(
     ["settlements", "list"],
-    () => settlementsApi.list({ pageSize: 200 }).then((r) => r.data.map(toSettlement)),
+    () =>
+      listAll((page, pageSize) => settlementsApi.list({ page, pageSize })).then((r) =>
+        r.map(toSettlement),
+      ),
     SETTLEMENTS,
   );
 
   const vendors = useApiQuery(["vendors", "approved"], () =>
-    vendorsApi.list({ pageSize: 200, status: "APPROVED" }).then((r) => r.data),
+    listAll((page, pageSize) => vendorsApi.list({ page, pageSize, status: "APPROVED" })),
   );
 
   const [selected, setSelected] = React.useState<Settlement | null>(null);

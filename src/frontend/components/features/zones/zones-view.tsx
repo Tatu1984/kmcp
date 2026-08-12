@@ -32,7 +32,7 @@ import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { ZoneFormSheet } from "./zone-form-sheet";
 import { ZoneStatusDialog } from "./zone-status-dialog";
 import { ZONES, VENDORS, DASHBOARD } from "@/frontend/lib/mock";
-import { zonesApi, vendorsApi } from "@/frontend/api";
+import { zonesApi, vendorsApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
 import { toZone } from "@/frontend/lib/adapters";
 import { ROUTES } from "@/shared/constants/routes";
@@ -75,7 +75,7 @@ export function ZonesView() {
     apply,
   } = useResource<Zone>(
     ["zones", "list"],
-    () => zonesApi.list({ pageSize: 200 }).then((r) => r.data.map(toZone)),
+    () => listAll((page, pageSize) => zonesApi.list({ page, pageSize })).then((r) => r.map(toZone)),
     ZONES,
   );
 
@@ -84,9 +84,9 @@ export function ZonesView() {
   const { items: vendors } = useResource<{ id: string; orgName: string }>(
     ["vendors", "approved"],
     () =>
-      vendorsApi
-        .list({ status: "APPROVED", pageSize: 100 })
-        .then((r) => r.data.map((v) => ({ id: v.id, orgName: v.orgName }))),
+      listAll((page, pageSize) => vendorsApi.list({ status: "APPROVED", page, pageSize })).then(
+        (r) => r.map((v) => ({ id: v.id, orgName: v.orgName })),
+      ),
     VENDORS.filter((v) => v.status === "APPROVED").map((v) => ({ id: v.id, orgName: v.orgName })),
   );
   const [formOpen, setFormOpen] = React.useState(false);

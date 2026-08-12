@@ -36,7 +36,7 @@ import {
   SessionsTrendChart,
 } from "@/frontend/components/features/dashboard/charts";
 import { ZONES, VENDORS, PAYMENTS, DASHBOARD, HOURLY_SERIES } from "@/frontend/lib/mock";
-import { analyticsApi, revenueApi, settlementsApi, zonesApi } from "@/frontend/api";
+import { analyticsApi, revenueApi, settlementsApi, zonesApi, listAll } from "@/frontend/api";
 import { useApiQuery } from "@/frontend/hooks/use-api";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatMoney, percent } from "@/shared/utils/common.util";
@@ -187,7 +187,7 @@ export function RevenueView() {
   // Occupancy is a zones question, not a revenue one, so it comes from the
   // zones endpoint rather than being folded into the revenue response.
   const zonesQuery = useApiQuery(["zones", "utilisation"], () =>
-    zonesApi.list({ pageSize: 200 }).then((r) => r.data),
+    listAll((page, pageSize) => zonesApi.list({ page, pageSize })),
   );
   const utilisation = (zonesQuery.data ?? ZONES).map((zone) => ({
     id: zone.id,

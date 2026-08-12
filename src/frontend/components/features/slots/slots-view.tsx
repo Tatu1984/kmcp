@@ -47,7 +47,7 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Plate, SectionCard } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SLOTS, ZONES } from "@/frontend/lib/mock";
-import { slotsApi, zonesApi } from "@/frontend/api";
+import { slotsApi, zonesApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
 import { toSlot } from "@/frontend/lib/adapters";
 import { ROUTES } from "@/shared/constants/routes";
@@ -68,9 +68,9 @@ export function SlotsView() {
   const { items: zones } = useResource<{ id: string; code: string; name: string }>(
     ["zones", "picker"],
     () =>
-      zonesApi
-        .list({ pageSize: 200 })
-        .then((r) => r.data.map((z) => ({ id: z.id, code: z.code, name: z.name }))),
+      listAll((page, pageSize) => zonesApi.list({ page, pageSize })).then((r) =>
+        r.map((z) => ({ id: z.id, code: z.code, name: z.name })),
+      ),
     ZONES.map((z) => ({ id: z.id, code: z.code, name: z.name })),
   );
 
@@ -81,7 +81,7 @@ export function SlotsView() {
     apply,
   } = useResource<Slot>(
     ["slots", "list"],
-    () => slotsApi.list({ pageSize: 500 }).then((r) => r.data.map(toSlot)),
+    () => listAll((page, pageSize) => slotsApi.list({ page, pageSize })).then((r) => r.map(toSlot)),
     SLOTS,
   );
   const [zoneId, setZoneId] = React.useState(zoneParam ?? "__all");

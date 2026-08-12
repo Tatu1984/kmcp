@@ -49,7 +49,7 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { SectionCard } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem, SpotlightCard } from "@/frontend/components/reactbits";
 import { REPORT_JOBS, REPORT_TYPES, SCHEDULED_REPORTS, ZONES, VENDORS } from "@/frontend/lib/mock";
-import { reportsApi, zonesApi, vendorsApi } from "@/frontend/api";
+import { reportsApi, zonesApi, vendorsApi, listAll } from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
 import { toReportJob } from "@/frontend/lib/adapters";
 import { relativeTime } from "@/shared/utils/common.util";
@@ -84,10 +84,10 @@ export function ReportsView() {
   const reportTypes = catalogue.data ?? REPORT_TYPES;
 
   const zones = useApiQuery(["zones", "for-reports"], () =>
-    zonesApi.list({ pageSize: 200 }).then((r) => r.data),
+    listAll((page, pageSize) => zonesApi.list({ page, pageSize })),
   );
   const vendors = useApiQuery(["vendors", "for-reports"], () =>
-    vendorsApi.list({ pageSize: 200 }).then((r) => r.data),
+    listAll((page, pageSize) => vendorsApi.list({ page, pageSize })),
   );
 
   const [generateOpen, setGenerateOpen] = React.useState(false);

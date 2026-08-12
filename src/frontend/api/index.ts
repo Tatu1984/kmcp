@@ -1,4 +1,4 @@
-export { api, ApiError, setTokens, getTokens, deviceId, apiBaseUrl } from "./client";
+export { api, listAll, ApiError, setTokens, getTokens, deviceId, apiBaseUrl } from "./client";
 export type { ApiResult, RequestOptions } from "./client";
 export { authApi } from "./endpoints/auth.api";
 export type { LoginResponse, MeResponse, Principal, TokenPair } from "./endpoints/auth.api";

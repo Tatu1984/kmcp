@@ -31,7 +31,7 @@ import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { TariffFormSheet } from "./tariff-form-sheet";
 import { QuoteCalculator } from "./quote-calculator";
 import { TARIFFS, HOLIDAYS, DISCOUNTS, ZONES } from "@/frontend/lib/mock";
-import { tariffsApi } from "@/frontend/api";
+import { tariffsApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
 import { toTariff } from "@/frontend/lib/adapters";
 import { formatDate, formatDuration } from "@/shared/utils/common.util";
@@ -68,7 +68,7 @@ export function TariffsView() {
     apply,
   } = useResource<Tariff>(
     ["tariffs", "list"],
-    () => tariffsApi.list({ pageSize: 200 }).then((r) => r.data.map(toTariff)),
+    () => listAll((page, pageSize) => tariffsApi.list({ page, pageSize })).then((r) => r.map(toTariff)),
     TARIFFS,
   );
   const [selected, setSelected] = React.useState<Tariff | null>(null);

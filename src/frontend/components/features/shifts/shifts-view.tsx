@@ -32,7 +32,7 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, Money, SplitMeter } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SHIFTS } from "@/frontend/lib/mock";
-import { shiftsApi } from "@/frontend/api";
+import { shiftsApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
 import { toShift } from "@/frontend/lib/adapters";
 import { formatDateTime, formatMoney, relativeTime } from "@/shared/utils/common.util";
@@ -46,7 +46,7 @@ export function ShiftsView() {
     apply,
   } = useResource<Shift>(
     ["shifts", "list"],
-    () => shiftsApi.list({ pageSize: 200 }).then((r) => r.data.map(toShift)),
+    () => listAll((page, pageSize) => shiftsApi.list({ page, pageSize })).then((r) => r.map(toShift)),
     SHIFTS,
   );
   const [selected, setSelected] = React.useState<Shift | null>(null);

@@ -31,7 +31,7 @@ import { Money, Plate } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SessionDetailSheet } from "./session-detail-sheet";
 import { SESSIONS, ZONES } from "@/frontend/lib/mock";
-import { sessionsApi } from "@/frontend/api";
+import { sessionsApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
 import { toSession } from "@/frontend/lib/adapters";
 import { ROUTES } from "@/shared/constants/routes";
@@ -48,7 +48,10 @@ export function SessionsView() {
     apply,
   } = useResource<ParkingSession>(
     ["sessions", "list"],
-    () => sessionsApi.list({ pageSize: 200 }).then((r) => r.data.map(toSession)),
+    () =>
+      listAll((page, pageSize) => sessionsApi.list({ page, pageSize })).then((r) =>
+        r.map(toSession),
+      ),
     SESSIONS,
   );
   const [selected, setSelected] = React.useState<ParkingSession | null>(null);

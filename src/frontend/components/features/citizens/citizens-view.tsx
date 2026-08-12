@@ -36,7 +36,7 @@ import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, Money, PersonCell, Plate } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { CITIZENS, SESSIONS } from "@/frontend/lib/mock";
-import { citizensApi } from "@/frontend/api";
+import { citizensApi, listAll } from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
 import { toCitizen } from "@/frontend/lib/adapters";
 import { isLiveApi } from "@/config/env";
@@ -51,7 +51,10 @@ export function CitizensView() {
     apply,
   } = useResource<Citizen>(
     ["citizens", "list"],
-    () => citizensApi.list({ pageSize: 200 }).then((r) => r.data.map(toCitizen)),
+    () =>
+      listAll((page, pageSize) => citizensApi.list({ page, pageSize })).then((r) =>
+        r.map(toCitizen),
+      ),
     CITIZENS,
   );
   const [selected, setSelected] = React.useState<Citizen | null>(null);

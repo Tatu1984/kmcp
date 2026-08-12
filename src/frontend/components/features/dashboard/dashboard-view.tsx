@@ -53,7 +53,7 @@ import {
   PAYMENTS,
   ZONES,
 } from "@/frontend/lib/mock";
-import { analyticsApi, revenueApi, zonesApi } from "@/frontend/api";
+import { analyticsApi, revenueApi, zonesApi, listAll } from "@/frontend/api";
 import { useApiQuery } from "@/frontend/hooks/use-api";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatMoney, percent } from "@/shared/utils/common.util";
@@ -155,7 +155,7 @@ export function DashboardView() {
 
   /** How many zones sit in each operating state. */
   const allZones = useApiQuery(["zones", "status-counts"], () =>
-    zonesApi.list({ pageSize: 200 }).then((r) => r.data),
+    listAll((page, pageSize) => zonesApi.list({ page, pageSize })),
   );
   const zoneStatusCounts = React.useMemo(() => {
     const source = allZones.data ?? ZONES;
