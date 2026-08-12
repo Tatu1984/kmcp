@@ -75,12 +75,43 @@ export function serverEnv(): ServerEnv {
   return cached;
 }
 
-export const clientEnv: ClientEnv = clientSchema.parse({
-  // Next.js inlines NEXT_PUBLIC_* at build time, so these must be referenced
-  // as literal property accesses rather than looked up dynamically.
-  NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
-  NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: process.env.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY,
-});
+function parseClientEnv(): ClientEnv {
+  const raw = {
+    // Next.js inlines NEXT_PUBLIC_* at build time, so these must be referenced
+    // as literal property accesses rather than looked up dynamically.
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+    NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: process.env.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY,
+  };
+
+  const parsed = clientSchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+
+  /**
+   * Failing the build here is deliberate — a bad API address must not reach
+   * production — but the message has to say what was wrong with it.
+   *
+   * A bare ZodError names the variable and not its value, which sends whoever
+   * is reading the build log to the code rather than to the setting. These are
+   * NEXT_PUBLIC_ variables, so echoing them leaks nothing: they are compiled
+   * into the bundle every browser downloads.
+   */
+  const issues = parsed.error.issues
+    .map((issue) => {
+      const key = String(issue.path[0]);
+      const received = raw[key as keyof typeof raw];
+      return `  ${key}: ${issue.message}\n    received: ${JSON.stringify(received)}`;
+    })
+    .join("\n");
+
+  throw new Error(
+    `Invalid public environment configuration:\n${issues}\n\n` +
+      "An API address needs its scheme and version prefix, for example:\n" +
+      "  NEXT_PUBLIC_API_URL=https://kmcp-backend.vercel.app/api/v1\n" +
+      "Leave it unset entirely to run the portal on its bundled demonstration data.",
+  );
+}
+
+export const clientEnv: ClientEnv = parseClientEnv();
 
 /** True when the portal is pointed at a live backend rather than mock data. */
 export const isLiveApi = Boolean(clientEnv.NEXT_PUBLIC_API_URL);
