@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { API_CONFIG } from "@/config/api.config";
 
 /**
  * Every environment variable is validated at boot. A missing or malformed value
@@ -59,6 +60,39 @@ const clientSchema = z.object({
   NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: z.string().optional(),
 });
 
+/**
+ * Repairs the two ways an API address is habitually mistyped, and leaves
+ * anything else for the schema to reject.
+ *
+ * A Vercel project settings field is filled by pasting a domain, so the value
+ * arrives as a bare host with no scheme — which is unambiguous, and not worth
+ * failing a deploy over. A missing version prefix is the same paste one step
+ * later: an origin with no path cannot be the base of an API that serves every
+ * route under /api/v1, so the prefix is supplied rather than left to become a
+ * building deployment where every request 404s.
+ *
+ * A value that already carries a path is never touched — that is a deliberate
+ * choice about where the API lives, and guessing over it would be worse than
+ * either mistake this repairs.
+ *
+ * Returns null when the value cannot be read as a URL at all, so the caller
+ * reports it against what was actually set rather than against a repair.
+ */
+function normalizeApiUrl(value: string): string | null {
+  const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+  let url: URL;
+  try {
+    url = new URL(hasScheme ? value : `https://${value}`);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (!url.hostname) return null;
+
+  const path = url.pathname.replace(/\/+$/, "");
+  return `${url.origin}${path === "" ? API_CONFIG.basePath : path}`;
+}
+
 export type ServerEnv = z.infer<typeof serverSchema>;
 export type ClientEnv = z.infer<typeof clientSchema>;
 
@@ -76,12 +110,25 @@ export function serverEnv(): ServerEnv {
 }
 
 function parseClientEnv(): ClientEnv {
-  const raw = {
-    // Next.js inlines NEXT_PUBLIC_* at build time, so these must be referenced
-    // as literal property accesses rather than looked up dynamically.
+  // Next.js inlines NEXT_PUBLIC_* at build time, so these must be referenced
+  // as literal property accesses rather than looked up dynamically.
+  const configured = {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
     NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: process.env.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY,
   };
+
+  // An empty string is how an unset variable reaches a build on most hosts.
+  const apiUrl = configured.NEXT_PUBLIC_API_URL?.trim() || undefined;
+  const normalizedApiUrl = apiUrl === undefined ? undefined : (normalizeApiUrl(apiUrl) ?? apiUrl);
+
+  if (typeof window === "undefined" && normalizedApiUrl !== undefined && normalizedApiUrl !== apiUrl) {
+    console.info(
+      `NEXT_PUBLIC_API_URL: read "${apiUrl}" as "${normalizedApiUrl}". ` +
+        "Set the full address to silence this.",
+    );
+  }
+
+  const raw = { ...configured, NEXT_PUBLIC_API_URL: normalizedApiUrl };
 
   const parsed = clientSchema.safeParse(raw);
   if (parsed.success) return parsed.data;
@@ -98,7 +145,8 @@ function parseClientEnv(): ClientEnv {
   const issues = parsed.error.issues
     .map((issue) => {
       const key = String(issue.path[0]);
-      const received = raw[key as keyof typeof raw];
+      // Report what is set in the dashboard, not what normalizing made of it.
+      const received = configured[key as keyof typeof configured];
       return `  ${key}: ${issue.message}\n    received: ${JSON.stringify(received)}`;
     })
     .join("\n");
