@@ -34,36 +34,10 @@ import { ZoneStatusDialog } from "./zone-status-dialog";
 import { ZONES, VENDORS, DASHBOARD } from "@/frontend/lib/mock";
 import { zonesApi, vendorsApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
-import { toZone } from "@/frontend/lib/adapters";
+import { toZone, toZonePayload } from "@/frontend/lib/adapters";
 import { ROUTES } from "@/shared/constants/routes";
 import { percent } from "@/shared/utils/common.util";
 import type { Zone } from "@/shared/types/domain.types";
-
-/**
- * The form edits the shape the table renders; the API takes the normalised one.
- * Only defined fields are sent, so a partial edit stays a partial update rather
- * than blanking whatever the form did not touch.
- */
-function toZonePayload(draft: Partial<Zone>): Record<string, unknown> {
-  const payload: Record<string, unknown> = {};
-  const put = (key: string, value: unknown) => {
-    if (value !== undefined && value !== "") payload[key] = value;
-  };
-
-  put("code", draft.code);
-  put("name", draft.name);
-  put("wardId", draft.wardId);
-  put("capacity", draft.capacity);
-  put("openTime", draft.openTime);
-  put("closeTime", draft.closeTime);
-  put("allowedVehicleTypeIds", draft.allowedVehicleTypes);
-  put("vendorId", draft.vendorId);
-  if (draft.center) {
-    payload.centerLat = draft.center.lat;
-    payload.centerLng = draft.center.lng;
-  }
-  return payload;
-}
 
 export function ZonesView() {
   const router = useRouter();

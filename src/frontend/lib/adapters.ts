@@ -51,6 +51,34 @@ import type { Role } from "@/shared/constants/roles";
  * substituting a zero. A blank cell reads as "not known"; ₹0 reads as a fact.
  */
 
+/**
+ * The other direction, for the one form that has two entry points.
+ *
+ * The zone form edits the shape the table renders; the API takes the normalised
+ * one. Only defined fields are sent, so a partial edit stays a partial update
+ * rather than blanking whatever the form did not touch.
+ */
+export function toZonePayload(draft: Partial<Zone>): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  const put = (key: string, value: unknown) => {
+    if (value !== undefined && value !== "") payload[key] = value;
+  };
+
+  put("code", draft.code);
+  put("name", draft.name);
+  put("wardId", draft.wardId);
+  put("capacity", draft.capacity);
+  put("openTime", draft.openTime);
+  put("closeTime", draft.closeTime);
+  put("allowedVehicleTypeIds", draft.allowedVehicleTypes);
+  put("vendorId", draft.vendorId);
+  if (draft.center) {
+    payload.centerLat = draft.center.lat;
+    payload.centerLng = draft.center.lng;
+  }
+  return payload;
+}
+
 export function toZone(zone: ApiZone): Zone {
   return {
     id: zone.id,

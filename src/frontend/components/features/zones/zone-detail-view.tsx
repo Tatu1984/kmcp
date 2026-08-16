@@ -8,6 +8,7 @@ import {
   Building2,
   Clock,
   Copy,
+  LandPlot,
   MapPin,
   Pencil,
   Printer,
@@ -39,7 +40,29 @@ import { RevenueChart, SessionsTrendChart } from "@/frontend/components/features
 import { ZoneFormSheet } from "./zone-form-sheet";
 import { ZoneStatusDialog } from "./zone-status-dialog";
 import { ZoneMap } from "@/frontend/components/shared/map";
+import { EmptyState } from "@/frontend/components/shared/empty-state";
+import { Skeleton } from "@/frontend/components/ui/skeleton";
 import { ZONES, SLOTS, SESSIONS, TARIFFS, INCIDENTS, ATTENDANTS } from "@/frontend/lib/mock";
+import {
+  zonesApi,
+  slotsApi,
+  sessionsApi,
+  tariffsApi,
+  incidentsApi,
+  attendantsApi,
+  listAll,
+} from "@/frontend/api";
+import { useApiQuery, useResource } from "@/frontend/hooks/use-api";
+import {
+  toZone,
+  toZonePayload,
+  toSlot,
+  toSession,
+  toTariff,
+  toIncident,
+  toAttendant,
+} from "@/frontend/lib/adapters";
+import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
 import {
   formatDateTime,
@@ -52,17 +75,96 @@ import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
 import type { Zone } from "@/shared/types/domain.types";
 
 export function ZoneDetailView({ zoneId }: { zoneId: string }) {
-  const base = ZONES.find((z) => z.id === zoneId)!;
-  const [zone, setZone] = React.useState<Zone>(base);
+  const demoZone = ZONES.find((z) => z.id === zoneId);
+
+  /**
+   * The zone itself, carried through the same list machinery the other detail
+   * screens use, so the write path and the demo fallback behave identically.
+   *
+   * This page used to take the zone straight out of the demo dataset with a
+   * non-null assertion. A live id is not in that dataset, so every real zone
+   * opened to a crash — the page could not render its own title.
+   */
+  const { items, isLoading, emptyReason, apply } = useResource<Zone>(
+    ["zones", "detail", zoneId],
+    () => zonesApi.get(zoneId).then((r) => [toZone(r.data)]),
+    demoZone ? [demoZone] : [],
+  );
+  const zone = items[0];
   const [editOpen, setEditOpen] = React.useState(false);
   const [statusOpen, setStatusOpen] = React.useState(false);
 
-  const slots = SLOTS.filter((s) => s.zoneId === zone.id);
-  const sessions = SESSIONS.filter((s) => s.zoneId === zone.id);
+  /**
+   * Each tab asks the API for its own slice of the zone. Filtering the demo
+   * dataset by a live id matched nothing — and for incidents, which matched on
+   * zone *name*, it could show another zone's reports as this one's.
+   */
+  const slotsQuery = useApiQuery(["slots", "zone", zoneId], () =>
+    listAll((page, pageSize) => slotsApi.list({ zoneId, page, pageSize })).then((r) =>
+      r.map(toSlot),
+    ),
+  );
+  const sessionsQuery = useApiQuery(["sessions", "zone", zoneId], () =>
+    listAll((page, pageSize) => sessionsApi.list({ zoneId, page, pageSize }), 200).then((r) =>
+      r.map(toSession),
+    ),
+  );
+  // Every tariff, not the zone's: a rate with no zone is city-wide and applies
+  // here too, and the API's zoneId filter matches only the zone-specific ones.
+  const tariffsQuery = useApiQuery(["tariffs", "for-zone"], () =>
+    listAll((page, pageSize) => tariffsApi.list({ page, pageSize })).then((r) => r.map(toTariff)),
+  );
+  const incidentsQuery = useApiQuery(["incidents", "zone", zoneId], () =>
+    listAll((page, pageSize) => incidentsApi.list({ zoneId, page, pageSize })).then((r) =>
+      r.map(toIncident),
+    ),
+  );
+  const attendantsQuery = useApiQuery(["attendants", "zone", zoneId], () =>
+    listAll((page, pageSize) => attendantsApi.list({ zoneId, page, pageSize })).then((r) =>
+      r.map(toAttendant),
+    ),
+  );
+
+  // items[0] is genuinely absent while the first fetch runs, and stays absent
+  // if the id does not exist — neither may be allowed to reach the render below.
+  if (!zone) {
+    return (
+      <div className="space-y-4">
+        {isLoading ? (
+          <>
+            <Skeleton className="h-9 w-64" />
+            <Skeleton className="h-64 w-full" />
+          </>
+        ) : (
+          <EmptyState
+            icon={LandPlot}
+            title="Zone not found"
+            description={emptyReason ?? "No zone exists with this reference."}
+            action={
+              <Button size="sm" asChild>
+                <Link href={ROUTES.zones}>All zones</Link>
+              </Button>
+            }
+          />
+        )}
+      </div>
+    );
+  }
+
+  const slots = isLiveApi ? (slotsQuery.data ?? []) : SLOTS.filter((s) => s.zoneId === zone.id);
+  const sessions = isLiveApi
+    ? (sessionsQuery.data ?? [])
+    : SESSIONS.filter((s) => s.zoneId === zone.id);
   const activeSessions = sessions.filter((s) => s.status === "ACTIVE" || s.status === "OVERSTAY");
-  const tariffs = TARIFFS.filter((t) => t.zoneId === zone.id || !t.zoneId);
-  const incidents = INCIDENTS.filter((i) => i.zoneName === zone.name);
-  const attendants = ATTENDANTS.filter((a) => a.zoneId === zone.id);
+  const tariffs = (isLiveApi ? (tariffsQuery.data ?? []) : TARIFFS).filter(
+    (t) => t.zoneId === zone.id || !t.zoneId,
+  );
+  const incidents = isLiveApi
+    ? (incidentsQuery.data ?? [])
+    : INCIDENTS.filter((i) => i.zoneName === zone.name);
+  const attendants = isLiveApi
+    ? (attendantsQuery.data ?? [])
+    : ATTENDANTS.filter((a) => a.zoneId === zone.id);
 
   return (
     <div className="space-y-6">
@@ -331,6 +433,11 @@ export function ZoneDetailView({ zoneId }: { zoneId: string }) {
               </Button>
             }
           >
+            {slots.length === 0 && (
+              <p className="py-6 text-center text-sm text-muted-foreground">
+                No bays have been laid out in this zone yet.
+              </p>
+            )}
             <div className="grid grid-cols-3 gap-2 sm:grid-cols-6 lg:grid-cols-8">
               {slots.map((slot) => {
                 const tone =
@@ -375,6 +482,11 @@ export function ZoneDetailView({ zoneId }: { zoneId: string }) {
               </Button>
             }
           >
+            {sessions.length === 0 && (
+              <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+                No sessions have been recorded in this zone yet.
+              </p>
+            )}
             <ul className="divide-y divide-border/60">
               {sessions.slice(0, 12).map((session) => (
                 <li key={session.id}>
@@ -413,6 +525,11 @@ export function ZoneDetailView({ zoneId }: { zoneId: string }) {
               </Button>
             }
           >
+            {tariffs.length === 0 && (
+              <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+                No tariff covers this zone, so nothing can be charged here yet.
+              </p>
+            )}
             <ul className="divide-y divide-border/60">
               {tariffs.map((tariff) => (
                 <li key={tariff.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
@@ -520,19 +637,34 @@ export function ZoneDetailView({ zoneId }: { zoneId: string }) {
         </TabsContent>
       </Tabs>
 
+      {/*
+        Both of these edited the page's own copy of the zone and nothing else,
+        so a change made here survived until the next reload and no further.
+        They go to the API now, exactly as the same two dialogs do on the list.
+      */}
       <ZoneFormSheet
         open={editOpen}
         onOpenChange={setEditOpen}
         zone={zone}
-        onSaved={(draft) => setZone((z) => ({ ...z, ...draft }) as Zone)}
+        onSaved={(draft) =>
+          apply(
+            () => zonesApi.update(zone.id, toZonePayload(draft)),
+            (list) => list.map((z) => ({ ...z, ...draft }) as Zone),
+            { success: "Zone updated", description: draft.name },
+          )
+        }
       />
       <ZoneStatusDialog
         open={statusOpen}
         onOpenChange={setStatusOpen}
         zone={zone}
-        onChanged={(status, reason, until) =>
-          setZone((z) => ({ ...z, status, closureReason: reason, closureUntil: until }))
-        }
+        onChanged={(status, reason, until) => {
+          void apply(
+            () => zonesApi.changeStatus(zone.id, status, reason, until),
+            (list) =>
+              list.map((z) => ({ ...z, status, closureReason: reason, closureUntil: until })),
+          ).catch(() => undefined);
+        }}
       />
     </div>
   );
