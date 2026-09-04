@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { normaliseMobile } from "@/shared/utils/plate.util";
 import { FileUp, Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/frontend/components/ui/button";
@@ -118,7 +119,13 @@ export function VendorFormSheet({
                 <Input
                   id="contact-phone"
                   value={form.contactPhone}
-                  onChange={(e) => setForm({ ...form, contactPhone: e.target.value })}
+                  onChange={(e) =>
+                    // Normalised as it is typed. The API takes a bare ten-digit
+                    // Indian mobile or a +91 prefix and refuses anything else,
+                    // so a pasted "+91 98300 11999" or a leading zero was a
+                    // rejected save that only said "some fields need attention".
+                    setForm({ ...form, contactPhone: normaliseMobile(e.target.value) })
+                  }
                   placeholder="+91 98300 00000"
                 />
               </div>

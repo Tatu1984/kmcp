@@ -39,3 +39,20 @@ export const isValidPlate = (plate: string): boolean => {
   const p = normalisePlate(plate);
   return p.length >= 6 && p.length <= 12 && PATTERNS.some((re) => re.test(p));
 };
+
+/**
+ * Trims an Indian mobile number to the shape the API accepts.
+ *
+ * The API takes ten digits beginning 6-9, optionally prefixed `+91`. People
+ * type and paste neither: they paste `+91 98300 11999`, or a leading zero from
+ * a landline habit, or hyphens. Each was a rejected save. Stripping the
+ * separators and the two common prefixes as the field is typed removes the
+ * whole class, and the server still has the final say.
+ */
+export function normaliseMobile(input: string): string {
+  const digits = input.replace(/[^\d+]/g, "");
+  const plus = digits.startsWith("+91");
+  let rest = plus ? digits.slice(3) : digits.replace(/^91(?=\d{10}$)/, "").replace(/^0+/, "");
+  rest = rest.replace(/\D/g, "").slice(0, 10);
+  return plus ? `+91${rest}` : rest;
+}

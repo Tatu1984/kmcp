@@ -7,6 +7,30 @@ import { ApiError } from "@/frontend/api";
 import { isLiveApi } from "@/config/env";
 
 /**
+ * What went wrong, in words that name the field.
+ *
+ * The API answers a rejected write with `VALIDATION_FAILED`, a generic message
+ * — "Some fields need attention." — and a `details` array saying exactly which
+ * field and why. The portal was showing the generic half and discarding the
+ * useful one, so a mistyped mobile number and a malformed GSTIN produced the
+ * same five words. Every rejected save read as "nothing works".
+ */
+export function describeApiError(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    return "That did not go through. Please try again.";
+  }
+  if (!error.details?.length) return error.message;
+
+  const humanise = (field: string) =>
+    field
+      .replace(/([A-Z])/g, " $1")
+      .replace(/^./, (c) => c.toUpperCase())
+      .trim();
+
+  return error.details.map((d) => `${humanise(d.field)}: ${d.issue}`).join(" · ");
+}
+
+/**
  * Wraps TanStack Query with the two behaviours every screen in this portal
  * wants: don't fire when there is no backend configured, and don't retry a
  * request the server has already refused on its merits.
@@ -82,9 +106,7 @@ export function useResource<T>(
           toast.success(messages.success, { description: messages.description });
         }
       } catch (error) {
-        toast.error(
-          error instanceof ApiError ? error.message : "That did not go through. Please try again.",
-        );
+        toast.error(describeApiError(error));
         throw error;
       } finally {
         setBusy(false);
