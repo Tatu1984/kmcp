@@ -66,7 +66,11 @@ function toTariffPayload(draft: Partial<Tariff>): Record<string, unknown> {
   };
   put("name", draft.name);
   put("zoneId", draft.zoneId);
-  put("vehicleTypeId", draft.vehicleType);
+  // `vehicleType`, not `vehicleTypeId`. The API takes the SlotType enum here,
+  // and sending the wrong key meant a required field was simply absent — so
+  // every attempt to draft or edit a tariff was rejected, and the message said
+  // only that some fields needed attention.
+  put("vehicleType", draft.vehicleType);
   put("baseAmount", draft.baseAmount);
   put("baseMinutes", draft.baseMinutes);
   put("incrementAmount", draft.incrementAmount);
