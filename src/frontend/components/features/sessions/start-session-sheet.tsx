@@ -131,7 +131,7 @@ export function StartSessionSheet({
               </p>
             ) : (
               <Select value={zone?.id ?? ""} onValueChange={setZoneId}>
-                <SelectTrigger id="start-zone">
+                <SelectTrigger id="start-zone" className="w-full">
                   <SelectValue placeholder="Choose a zone" />
                 </SelectTrigger>
                 <SelectContent>
@@ -170,7 +170,7 @@ export function StartSessionSheet({
           <div className="space-y-1.5">
             <Label htmlFor="start-vehicle">Vehicle type</Label>
             <Select value={vehicleType} onValueChange={(v) => setVehicleType(v as SlotType)}>
-              <SelectTrigger id="start-vehicle">
+              <SelectTrigger id="start-vehicle" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

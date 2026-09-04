@@ -47,6 +47,7 @@ import { useResource } from "@/frontend/hooks/use-api";
 import { toVendor } from "@/frontend/lib/adapters";
 import { downloadCsv } from "@/frontend/lib/csv";
 import { ROUTES } from "@/shared/constants/routes";
+import { isLiveApi } from "@/config/env";
 import type { Vendor, VendorStatus } from "@/shared/types/domain.types";
 
 /** The form edits the rendered shape; the API takes its own. Only send what changed. */
@@ -72,6 +73,7 @@ export function VendorsView() {
   const {
     items: vendors,
     isLoading,
+    isRefreshing,
     emptyReason,
     apply,
     refresh,
@@ -394,6 +396,16 @@ export function VendorsView() {
           },
         ]}
         onRowClick={(vendor) => router.push(ROUTES.vendor(vendor.id))}
+        onRefresh={() => {
+          if (!isLiveApi) {
+            toast.info("Demo data", {
+              description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+            });
+            return;
+          }
+          void refresh();
+        }}
+        isRefreshing={isRefreshing}
         onExport={(rows, columns) => {
           const file = downloadCsv("vendors", rows, columns);
           toast.success("Export ready", { description: `${rows.length} vendors · ${file}` });

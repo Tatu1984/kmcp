@@ -71,9 +71,11 @@ export function SettlementsView() {
   const {
     items: settlements,
     isLoading,
+    isRefreshing,
     isBusy,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Settlement>(
     ["settlements", "list"],
     () =>
@@ -480,6 +482,16 @@ export function SettlementsView() {
           },
         ]}
         onRowClick={(settlement) => router.push(ROUTES.settlement(settlement.id))}
+        onRefresh={() => {
+          if (!isLiveApi) {
+            toast.info("Demo data", {
+              description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+            });
+            return;
+          }
+          void refresh();
+        }}
+        isRefreshing={isRefreshing}
         onExport={(rows, columns) => {
           const file = downloadCsv("settlements", rows, columns);
           toast.success("Export ready", { description: `${rows.length} settlements · ${file}` });
@@ -570,7 +582,7 @@ export function SettlementsView() {
                 value={runCycle}
                 onValueChange={(v) => setRunCycle(v as typeof runCycle)}
               >
-                <SelectTrigger id="run-cycle">
+                <SelectTrigger id="run-cycle" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -586,7 +598,7 @@ export function SettlementsView() {
             <div className="space-y-1.5">
               <Label htmlFor="run-vendor">Vendor</Label>
               <Select value={runVendor} onValueChange={setRunVendor}>
-                <SelectTrigger id="run-vendor">
+                <SelectTrigger id="run-vendor" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

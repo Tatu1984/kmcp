@@ -68,15 +68,34 @@ export function endSession(): void {
   }
 }
 
-/** Last known principal, so the header renders a name before /auth/me returns. */
+let lastRawPrincipal: string | null = null;
+let lastParsedPrincipal: SessionUser | null = null;
+
+/**
+ * Last known principal, so the header renders a name before /auth/me returns.
+ *
+ * Caches by the raw string so two calls against an unchanged
+ * `localStorage` entry return the same object reference rather than a fresh
+ * `JSON.parse` each time. `useSession` feeds this straight to
+ * `useSyncExternalStore`, which warns of an infinite loop if a snapshot is
+ * not referentially stable across calls that saw no real change.
+ */
 export function storedPrincipal(): SessionUser | null {
   if (typeof window === "undefined") return null;
+  let raw: string | null;
   try {
-    const raw = window.localStorage.getItem(PRINCIPAL_KEY);
-    return raw ? (JSON.parse(raw) as SessionUser) : null;
+    raw = window.localStorage.getItem(PRINCIPAL_KEY);
   } catch {
-    return null;
+    raw = null;
   }
+  if (raw === lastRawPrincipal) return lastParsedPrincipal;
+  lastRawPrincipal = raw;
+  try {
+    lastParsedPrincipal = raw ? (JSON.parse(raw) as SessionUser) : null;
+  } catch {
+    lastParsedPrincipal = null;
+  }
+  return lastParsedPrincipal;
 }
 
 /** Widens an API principal into the shape the chrome renders. */

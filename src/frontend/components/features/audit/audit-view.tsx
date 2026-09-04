@@ -468,6 +468,16 @@ export function AuditView() {
               searchKeys={["action", "entity", "entityId"]}
               searchPlaceholder="Search action, entity or id…"
               onRowClick={setSelected}
+              onRefresh={() => {
+                if (!isLiveApi) {
+                  toast.info("Demo data", {
+                    description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+                  });
+                  return;
+                }
+                void logs.refetch();
+              }}
+              isRefreshing={logs.isFetching}
               emptyTitle="No changes recorded yet"
               emptyDescription="Entries appear here the moment anyone changes a zone, tariff, vendor or settlement."
             />
@@ -484,6 +494,16 @@ export function AuditView() {
               searchKeys={["userName", "identifierTried", "ipAddress", "city", "isp"]}
               searchPlaceholder="Search account, IP, city or ISP…"
               onRowClick={setSelectedEvent}
+              onRefresh={() => {
+                if (!isLiveApi) {
+                  toast.info("Demo data", {
+                    description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+                  });
+                  return;
+                }
+                void events.refetch();
+              }}
+              isRefreshing={events.isFetching}
               emptyTitle="No sign-in activity"
               emptyDescription="Every attempt is recorded here, including ones against accounts that do not exist."
             />

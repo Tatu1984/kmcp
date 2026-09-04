@@ -10,6 +10,7 @@ import {
   CircleCheck,
   Crown,
   Grid3x3,
+  Loader2,
   Pencil,
   Plus,
   ShieldBan,
@@ -55,8 +56,10 @@ import { slotsApi, zonesApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
 import { toSlot } from "@/frontend/lib/adapters";
 import { downloadCsv } from "@/frontend/lib/csv";
+import { mapWithConcurrency } from "@/frontend/lib/concurrency";
 import { ROUTES } from "@/shared/constants/routes";
-import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
+import { VEHICLE_TYPE_LABELS, VEHICLE_TYPE_PREFIXES } from "@/config/app.config";
+import { isLiveApi } from "@/config/env";
 import { cn } from "@/lib/utils";
 import type { Slot, SlotStatus, SlotType } from "@/shared/types/domain.types";
 
@@ -82,8 +85,10 @@ export function SlotsView() {
   const {
     items: slots,
     isLoading,
+    isRefreshing,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Slot>(
     ["slots", "list"],
     () => listAll((page, pageSize) => slotsApi.list({ page, pageSize })).then((r) => r.map(toSlot)),
@@ -101,6 +106,10 @@ export function SlotsView() {
   const [editOpen, setEditOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<Slot | null>(null);
   const [bulk, setBulk] = React.useState({ zoneId: "", type: "CAR" as SlotType, prefix: "C", count: 20 });
+  // Whether the operator has typed into the prefix themselves — once they
+  // have, picking a different bay type must not clobber their edit.
+  const [prefixTouched, setPrefixTouched] = React.useState(false);
+  const [bulkBusy, setBulkBusy] = React.useState(false);
   const [edit, setEdit] = React.useState({
     type: "CAR" as SlotType,
     isReserved: false,
@@ -113,8 +122,22 @@ export function SlotsView() {
     [slots, zoneId],
   );
 
+  // Bays with a status write in flight — the table cell and the row's
+  // actions trigger read this to show progress instead of sitting there
+  // looking unchanged until the refetch lands.
+  const [busyIds, setBusyIds] = React.useState<Set<string>>(new Set());
+  const markBusy = React.useCallback((id: string, busy: boolean) => {
+    setBusyIds((prev) => {
+      const next = new Set(prev);
+      if (busy) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
   const setStatus = React.useCallback(
     (slot: Slot, status: SlotStatus, label: string) => {
+      markBusy(slot.id, true);
       void apply(
         () =>
           slotsApi.changeStatus(
@@ -127,10 +150,22 @@ export function SlotsView() {
           ),
         (list) => list.map((s) => (s.id === slot.id ? { ...s, status } : s)),
         { success: `Bay ${slot.code} marked ${label}`, description: slot.zoneName },
-      ).catch(() => undefined);
+      )
+        .catch(() => undefined)
+        .finally(() => markBusy(slot.id, false));
     },
-    [apply],
+    [apply, markBusy],
   );
+
+  const handleRefresh = React.useCallback(() => {
+    if (!isLiveApi) {
+      toast.info("Demo data", {
+        description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+      });
+      return;
+    }
+    void refresh();
+  }, [refresh]);
 
   const openEdit = React.useCallback((slot: Slot) => {
     setSelected(slot);
@@ -176,7 +211,14 @@ export function SlotsView() {
         accessorKey: "status",
         header: "Status",
         meta: "Status",
-        cell: ({ row }) => <StatusBadge status={row.original.status} pulse={row.original.status === "OCCUPIED"} />,
+        cell: ({ row }) =>
+          busyIds.has(row.original.id) ? (
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" /> Updating…
+            </span>
+          ) : (
+            <StatusBadge status={row.original.status} pulse={row.original.status === "OCCUPIED"} />
+          ),
       },
       {
         id: "vehicle",
@@ -200,6 +242,19 @@ export function SlotsView() {
             <div className="flex justify-end">
               <RowActions
                 label={`Bay ${slot.code}`}
+                trigger={
+                  busyIds.has(slot.id) ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 text-muted-foreground"
+                      disabled
+                      aria-label="Bay update in progress"
+                    >
+                      <Loader2 className="size-4 animate-spin" />
+                    </Button>
+                  ) : undefined
+                }
                 actions={[
                   {
                     label: "Edit bay",
@@ -261,7 +316,7 @@ export function SlotsView() {
         },
       },
     ],
-    [apply, setStatus, openEdit],
+    [apply, setStatus, openEdit, busyIds],
   );
 
   const counts = {
@@ -357,6 +412,7 @@ export function SlotsView() {
                       : slot.status === "OUT_OF_SERVICE"
                         ? "border-red-500/35 bg-red-500/10 hover:bg-red-500/20"
                         : "border-emerald-500/35 bg-emerald-500/10 hover:bg-emerald-500/20";
+                const busy = busyIds.has(slot.id);
                 return (
                   <button
                     key={slot.id}
@@ -364,7 +420,7 @@ export function SlotsView() {
                     // Tapping a bay here writes a status, so it answers to the
                     // same `slot.write` the ⋯ menu does. The tiles stay on
                     // screen either way — the map is how this screen is read.
-                    disabled={!canWrite}
+                    disabled={!canWrite || busy}
                     onClick={() =>
                       setStatus(
                         slot,
@@ -373,8 +429,9 @@ export function SlotsView() {
                       )
                     }
                     className={cn(
-                      "rounded-lg border p-2 text-center transition-all",
-                      canWrite ? "hover:scale-[1.04]" : "cursor-not-allowed",
+                      "relative rounded-lg border p-2 text-center transition-all",
+                      canWrite && !busy ? "hover:scale-[1.04]" : "cursor-not-allowed",
+                      busy && "opacity-60",
                       tone,
                     )}
                     title={
@@ -383,6 +440,9 @@ export function SlotsView() {
                         : `${slot.zoneName} · ${VEHICLE_TYPE_LABELS[slot.type]} · ${slot.status} — ${NOT_PERMITTED}`
                     }
                   >
+                    {busy && (
+                      <Loader2 className="absolute top-1 right-1 size-3 animate-spin text-muted-foreground" />
+                    )}
                     <p className="font-mono text-[11px] font-semibold">{slot.code}</p>
                     <p className="mt-0.5 truncate text-[9px] opacity-70">
                       {VEHICLE_TYPE_LABELS[slot.type]}
@@ -423,6 +483,8 @@ export function SlotsView() {
                 options: Object.entries(VEHICLE_TYPE_LABELS).map(([value, label]) => ({ value, label })),
               },
             ]}
+            onRefresh={handleRefresh}
+            isRefreshing={isRefreshing}
             onExport={(rows, columns) => {
               const file = downloadCsv("bays", rows, columns);
               toast.success("Export ready", { description: `${rows.length} bays · ${file}` });
@@ -433,13 +495,13 @@ export function SlotsView() {
                   size="sm"
                   variant="outline"
                   className="h-7"
-                  onClick={() =>
+                  disabled={rows.some((r) => busyIds.has(r.id))}
+                  onClick={() => {
+                    rows.forEach((r) => markBusy(r.id, true));
                     void apply(
                       () =>
-                        Promise.all(
-                          rows.map((s) =>
-                            slotsApi.changeStatus(s.id, "OUT_OF_SERVICE", "Bulk action from the portal"),
-                          ),
+                        mapWithConcurrency(rows, 4, (s) =>
+                          slotsApi.changeStatus(s.id, "OUT_OF_SERVICE", "Bulk action from the portal"),
                         ),
                       (list) =>
                         list.map((s) =>
@@ -449,17 +511,21 @@ export function SlotsView() {
                     )
                       .then(clear)
                       .catch(() => undefined)
-                  }
+                      .finally(() => rows.forEach((r) => markBusy(r.id, false)));
+                  }}
                 >
+                  {rows.some((r) => busyIds.has(r.id)) && <Loader2 className="size-3.5 animate-spin" />}
                   Take out of service
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
                   className="h-7"
-                  onClick={() =>
+                  disabled={rows.some((r) => busyIds.has(r.id))}
+                  onClick={() => {
+                    rows.forEach((r) => markBusy(r.id, true));
                     void apply(
-                      () => Promise.all(rows.map((s) => slotsApi.changeStatus(s.id, "AVAILABLE"))),
+                      () => mapWithConcurrency(rows, 4, (s) => slotsApi.changeStatus(s.id, "AVAILABLE")),
                       (list) =>
                         list.map((s) =>
                           rows.some((r) => r.id === s.id) ? { ...s, status: "AVAILABLE" as const } : s,
@@ -468,8 +534,10 @@ export function SlotsView() {
                     )
                       .then(clear)
                       .catch(() => undefined)
-                  }
+                      .finally(() => rows.forEach((r) => markBusy(r.id, false)));
+                  }}
                 >
+                  {rows.some((r) => busyIds.has(r.id)) && <Loader2 className="size-3.5 animate-spin" />}
                   Return to service
                 </Button>
               </Can>
@@ -499,7 +567,7 @@ export function SlotsView() {
                 value={bulk.zoneId}
                 onValueChange={(v) => setBulk((b) => ({ ...b, zoneId: v }))}
               >
-                <SelectTrigger id="bulk-zone">
+                <SelectTrigger id="bulk-zone" className="w-full">
                   {/* Placeholder rather than a defaulted value: the field used to
                       display the first zone in the list while holding nothing,
                       so bays quietly went to that zone instead of the one on
@@ -519,9 +587,20 @@ export function SlotsView() {
               <Label htmlFor="bulk-type">Bay type</Label>
               <Select
                 value={bulk.type}
-                onValueChange={(v) => setBulk((b) => ({ ...b, type: v as SlotType }))}
+                onValueChange={(v) => {
+                  const type = v as SlotType;
+                  setBulk((b) => ({
+                    ...b,
+                    type,
+                    // Suggest the type's usual prefix, but only while the
+                    // operator has not typed their own — an edit they made
+                    // on purpose must survive switching the type back and
+                    // forth while they are still filling in the rest.
+                    prefix: prefixTouched ? b.prefix : (VEHICLE_TYPE_PREFIXES[type] ?? b.prefix),
+                  }));
+                }}
               >
-                <SelectTrigger id="bulk-type">
+                <SelectTrigger id="bulk-type" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -538,7 +617,10 @@ export function SlotsView() {
               <Input
                 id="bulk-prefix"
                 value={bulk.prefix}
-                onChange={(e) => setBulk((b) => ({ ...b, prefix: e.target.value.toUpperCase() }))}
+                onChange={(e) => {
+                  setPrefixTouched(true);
+                  setBulk((b) => ({ ...b, prefix: e.target.value.toUpperCase() }));
+                }}
                 className="font-mono"
                 maxLength={2}
               />
@@ -561,6 +643,7 @@ export function SlotsView() {
               Cancel
             </Button>
             <Button
+              disabled={bulkBusy}
               onClick={() => {
                 const targetZone = bulk.zoneId;
                 if (!targetZone) {
@@ -586,6 +669,7 @@ export function SlotsView() {
 
                 let outcome: { created: number; skippedExisting: string[] } | null = null;
 
+                setBulkBusy(true);
                 void apply(
                   async () => {
                     const { data } = await slotsApi.bulkCreate({
@@ -630,9 +714,11 @@ export function SlotsView() {
                         (skipped ? ` · ${skipped} already existed and were skipped.` : " added."),
                     });
                   })
-                  .catch(() => undefined);
+                  .catch(() => undefined)
+                  .finally(() => setBulkBusy(false));
               }}
             >
+              {bulkBusy && <Loader2 className="size-4 animate-spin" />}
               Create bays
             </Button>
           </DialogFooter>

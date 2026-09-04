@@ -380,7 +380,7 @@ export function SettingsView() {
               <div className="space-y-1.5">
                 <Label htmlFor="auth-timezone">Time zone</Label>
                 <Select defaultValue={APP.timezone} onValueChange={() => setDirty(true)}>
-                  <SelectTrigger id="auth-timezone">
+                  <SelectTrigger id="auth-timezone" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -397,7 +397,7 @@ export function SettingsView() {
               <div className="space-y-1.5">
                 <Label htmlFor="locale-currency">Currency</Label>
                 <Select defaultValue="INR" onValueChange={() => setDirty(true)}>
-                  <SelectTrigger id="locale-currency">
+                  <SelectTrigger id="locale-currency" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -408,7 +408,7 @@ export function SettingsView() {
               <div className="space-y-1.5">
                 <Label htmlFor="locale-lang">Default language</Label>
                 <Select defaultValue="en-IN" onValueChange={() => setDirty(true)}>
-                  <SelectTrigger id="locale-lang">
+                  <SelectTrigger id="locale-lang" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -516,7 +516,7 @@ export function SettingsView() {
               <div className="space-y-1.5">
                 <Label htmlFor="settle-cycle">Default cycle</Label>
                 <Select defaultValue="WEEKLY" onValueChange={() => setDirty(true)}>
-                  <SelectTrigger id="settle-cycle">
+                  <SelectTrigger id="settle-cycle" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1362,7 +1362,7 @@ export function SettingsView() {
                   value={invite.role}
                   onValueChange={(v) => setInvite((u) => ({ ...u, role: v as Role }))}
                 >
-                  <SelectTrigger id="invite-role">
+                  <SelectTrigger id="invite-role" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>

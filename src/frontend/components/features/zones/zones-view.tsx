@@ -42,6 +42,7 @@ import { usePermissions } from "@/frontend/hooks/use-permissions";
 import { isLiveApi } from "@/config/env";
 import { toZone, toZonePayload } from "@/frontend/lib/adapters";
 import { downloadCsv } from "@/frontend/lib/csv";
+import { mapWithConcurrency } from "@/frontend/lib/concurrency";
 import { ROUTES } from "@/shared/constants/routes";
 import { percent } from "@/shared/utils/common.util";
 import type { Zone } from "@/shared/types/domain.types";
@@ -53,8 +54,10 @@ export function ZonesView() {
   const {
     items: zones,
     isLoading,
+    isRefreshing,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Zone>(
     ["zones", "list"],
     () => listAll((page, pageSize) => zonesApi.list({ page, pageSize })).then((r) => r.map(toZone)),
@@ -433,6 +436,16 @@ export function ZonesView() {
           },
         ]}
         onRowClick={(zone) => router.push(ROUTES.zone(zone.id))}
+        onRefresh={() => {
+          if (!isLiveApi) {
+            toast.info("Demo data", {
+              description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+            });
+            return;
+          }
+          void refresh();
+        }}
+        isRefreshing={isRefreshing}
         onExport={(rows, columns) => {
           // What the operator is looking at — current search, filters and
           // visible columns — written to a file here, rather than a toast
@@ -451,10 +464,8 @@ export function ZonesView() {
                 onClick={() =>
                   void apply(
                     () =>
-                      Promise.all(
-                        rows.map((z) =>
-                          zonesApi.changeStatus(z.id, "MAINTENANCE", "Closed for maintenance"),
-                        ),
+                      mapWithConcurrency(rows, 4, (z) =>
+                        zonesApi.changeStatus(z.id, "MAINTENANCE", "Closed for maintenance"),
                       ),
                     (list) =>
                       list.map((z) =>
@@ -479,7 +490,7 @@ export function ZonesView() {
                 className="h-7"
                 onClick={() =>
                   void apply(
-                    () => Promise.all(rows.map((z) => zonesApi.changeStatus(z.id, "OPEN"))),
+                    () => mapWithConcurrency(rows, 4, (z) => zonesApi.changeStatus(z.id, "OPEN")),
                     (list) =>
                       list.map((z) =>
                         rows.some((r) => r.id === z.id)

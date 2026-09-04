@@ -1,4 +1,5 @@
 import type { ApiZone, ApiVendor } from "@/frontend/api";
+import type { ApiWard } from "@/frontend/api/endpoints/geography.api";
 import type { ApiSession } from "@/frontend/api/endpoints/sessions.api";
 import type { ApiPayment } from "@/frontend/api/endpoints/payments.api";
 import type { ApiShift } from "@/frontend/api/endpoints/shifts.api";
@@ -17,6 +18,7 @@ import type {
   ApiBanner,
 } from "@/frontend/api/endpoints/master.api";
 import type {
+  Ward,
   Zone,
   Slot,
   Attendant,
@@ -79,6 +81,16 @@ export function toZonePayload(draft: Partial<Zone>): Record<string, unknown> {
     payload.centerLng = draft.center.lng;
   }
   return payload;
+}
+
+export function toWard(ward: ApiWard): Ward {
+  return {
+    id: ward.id,
+    code: ward.code,
+    name: ward.name,
+    zoneCount: ward.zoneCount ?? 0,
+    streetCount: ward.streetCount,
+  };
 }
 
 export function toZone(zone: ApiZone): Zone {

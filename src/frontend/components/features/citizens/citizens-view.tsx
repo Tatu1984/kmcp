@@ -72,8 +72,10 @@ export function CitizensView() {
   const {
     items: citizens,
     isLoading,
+    isRefreshing,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Citizen>(
     ["citizens", "list"],
     () =>
@@ -460,6 +462,16 @@ export function CitizensView() {
           },
         ]}
         onRowClick={open}
+        onRefresh={() => {
+          if (!isLiveApi) {
+            toast.info("Demo data", {
+              description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+            });
+            return;
+          }
+          void refresh();
+        }}
+        isRefreshing={isRefreshing}
         onExport={(rows) =>
           toast.success("Export queued", {
             description: `${rows.length} citizens · personal data is redacted per DPDP rules.`,

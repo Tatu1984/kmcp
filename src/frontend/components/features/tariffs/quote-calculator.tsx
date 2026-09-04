@@ -131,7 +131,7 @@ function DemoQuoteCalculator() {
           <div className="space-y-1.5">
             <Label htmlFor="quote-tariff">Tariff</Label>
             <Select value={tariffId} onValueChange={setTariffId}>
-              <SelectTrigger id="quote-tariff">
+              <SelectTrigger id="quote-tariff" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

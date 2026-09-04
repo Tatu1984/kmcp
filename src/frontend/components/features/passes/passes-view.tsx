@@ -87,8 +87,10 @@ export function PassesView() {
   const {
     items: passes,
     isLoading,
+    isRefreshing,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Pass>(
     ["passes", "list"],
     () => listAll((page, pageSize) => passesApi.list({ page, pageSize })).then((r) => r.map(toPass)),
@@ -417,6 +419,16 @@ export function PassesView() {
                 options: plans.map((p) => ({ value: p.name, label: p.name })),
               },
             ]}
+            onRefresh={() => {
+              if (!isLiveApi) {
+                toast.info("Demo data", {
+                  description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+                });
+                return;
+              }
+              void refresh();
+            }}
+            isRefreshing={isRefreshing}
             onExport={(rows) => toast.success("Export queued", { description: `${rows.length} passes` })}
             bulkActions={(rows, clear) => (
               /**
@@ -579,7 +591,7 @@ export function PassesView() {
                     value={planForm.vehicleTypeId}
                     onValueChange={(v) => setPlanForm({ ...planForm, vehicleTypeId: v })}
                   >
-                    <SelectTrigger id="plan-vehicle">
+                    <SelectTrigger id="plan-vehicle" className="w-full">
                       <SelectValue placeholder="Choose a vehicle type" />
                     </SelectTrigger>
                     <SelectContent>
@@ -604,7 +616,7 @@ export function PassesView() {
                       })
                     }
                   >
-                    <SelectTrigger id="plan-scope">
+                    <SelectTrigger id="plan-scope" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -624,7 +636,7 @@ export function PassesView() {
                   value={planForm.zoneId}
                   onValueChange={(v) => setPlanForm({ ...planForm, zoneId: v })}
                 >
-                  <SelectTrigger id="plan-zone">
+                  <SelectTrigger id="plan-zone" className="w-full">
                     <SelectValue placeholder="Choose a zone" />
                   </SelectTrigger>
                   <SelectContent>
@@ -645,7 +657,7 @@ export function PassesView() {
                   value={planForm.wardId}
                   onValueChange={(v) => setPlanForm({ ...planForm, wardId: v })}
                 >
-                  <SelectTrigger id="plan-ward">
+                  <SelectTrigger id="plan-ward" className="w-full">
                     <SelectValue placeholder="Choose a ward" />
                   </SelectTrigger>
                   <SelectContent>

@@ -10,6 +10,11 @@ import { endSession, storedPrincipal, toSessionUser, type SessionUser } from "@/
 import { CURRENT_USER } from "@/frontend/lib/mock";
 import { ROUTES } from "@/shared/constants/routes";
 
+/** A stable no-op — `storedPrincipal()` is read once per mount, not subscribed to. */
+function noSubscription() {
+  return () => {};
+}
+
 const DEMO_USER: SessionUser = {
   id: CURRENT_USER.id,
   name: CURRENT_USER.name,
@@ -38,7 +43,22 @@ export function useSession(): {
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  const [seed] = React.useState<SessionUser | null>(() => (isLiveApi ? storedPrincipal() : null));
+  /**
+   * `storedPrincipal()` reads browser storage, which does not exist during
+   * SSR. A lazy `useState(() => storedPrincipal())` runs that read on the
+   * client's first render too — the one hydration compares against the
+   * server's null-seeded HTML — so the signed-in button and the server's
+   * empty-avatar skeleton disagree and React tears the tree down as a
+   * hydration mismatch. `useSyncExternalStore` is what React gives a value
+   * exactly like this one for: a server snapshot (null, nothing to read) and
+   * a client snapshot (the stored principal), reconciled after hydration
+   * rather than during it.
+   */
+  const seed = React.useSyncExternalStore(
+    noSubscription,
+    () => (isLiveApi ? storedPrincipal() : null),
+    () => null,
+  );
 
   const me = useApiQuery(["auth", "me"], async () => toSessionUser(await authApi.me().then((r) => r.data)), {
     staleTime: 5 * 60_000,

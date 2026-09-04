@@ -11,6 +11,7 @@ import {
   Gauge,
   IdCard,
   LandPlot,
+  Map,
   ScrollText,
   Settings,
   ShieldAlert,
@@ -109,6 +110,16 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: SquareStack,
         description: "Individual bays, types and status",
         keywords: ["bay", "ev", "accessible", "reserved"],
+      },
+      {
+        label: "Wards",
+        href: ROUTES.wards,
+        // Wards only exist to scope zones, so they answer to the same
+        // permission zones do rather than a ward.* key of their own.
+        permission: "zone.read",
+        icon: Map,
+        description: "Civic divisions zones and streets belong to",
+        keywords: ["division", "geography", "street", "boundary"],
       },
       {
         label: "Incidents",

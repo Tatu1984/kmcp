@@ -118,6 +118,9 @@ export function useResource<T>(
   return {
     items,
     isLoading: isLiveApi && query.isLoading,
+    // True for a manual refetch too, not just the first load — a Refresh
+    // button reads this to spin for exactly as long as the request takes.
+    isRefreshing: isLiveApi && query.isFetching,
     isBusy: busy,
     error: query.error ?? null,
     emptyReason: emptyReason(query.error ?? null, query.isLoading),

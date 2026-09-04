@@ -75,6 +75,7 @@ export interface Ward {
   code: string;
   name: string;
   zoneCount: number;
+  streetCount?: number;
 }
 
 export interface Zone {

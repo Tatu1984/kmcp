@@ -28,6 +28,7 @@ import {
   Columns3,
   Download,
   Filter,
+  RefreshCw,
   Search,
   SlidersHorizontal,
   X,
@@ -142,6 +143,10 @@ export type DataTableProps<T> = {
   emptyAction?: React.ReactNode;
   /** Shows placeholder rows instead of an empty state while the first load runs. */
   isLoading?: boolean;
+  /** Renders a Refresh button, left of Export, that re-runs this call without navigating. */
+  onRefresh?: () => void;
+  /** Spins the Refresh button's icon and disables it while a refetch is in flight. */
+  isRefreshing?: boolean;
   /**
    * Handed the rows that survive the current search and filters, and the
    * columns currently on screen. Pass both to `downloadCsv` for a file that
@@ -168,6 +173,8 @@ export function DataTable<T extends object>({
   emptyDescription = "Once there is data it will show up in this table.",
   emptyAction,
   isLoading = false,
+  onRefresh,
+  isRefreshing = false,
   onExport,
   initialPageSize = DEFAULT_PAGE_SIZE,
   stickyHeader = true,
@@ -303,6 +310,19 @@ export function DataTable<T extends object>({
         </div>
 
         <div className="flex items-center gap-2">
+          {onRefresh && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9"
+              disabled={isRefreshing}
+              onClick={onRefresh}
+            >
+              <RefreshCw className={cn("size-4", isRefreshing && "animate-spin")} />
+              <span className="sr-only sm:not-sr-only">Refresh</span>
+            </Button>
+          )}
+
           {onExport && (
             <Button
               variant="outline"

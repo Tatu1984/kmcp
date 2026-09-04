@@ -31,6 +31,20 @@ export const VEHICLE_TYPE_LABELS: Record<string, string> = {
   ACCESSIBLE: "Accessible",
 };
 
+/** Suggested bay-code prefix for each vehicle type, offered as a starting point a bulk-add can still edit. */
+export const VEHICLE_TYPE_PREFIXES: Record<string, string> = {
+  TWO_WHEELER: "T",
+  THREE_WHEELER: "A",
+  CAR: "C",
+  COMMERCIAL: "M",
+  BUS: "B",
+  TRUCK: "K",
+  EV: "E",
+  VIP: "V",
+  GOVERNMENT: "G",
+  ACCESSIBLE: "D",
+};
+
 export const PAYMENT_MODE_LABELS: Record<string, string> = {
   CASH: "Cash",
   UPI_QR: "UPI QR",

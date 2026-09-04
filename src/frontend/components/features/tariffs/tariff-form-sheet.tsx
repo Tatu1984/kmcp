@@ -290,7 +290,7 @@ export function TariffFormSheet({
                       value={rule.type}
                       onValueChange={(v) => updateRule(rule.id, { type: v as TariffRuleType })}
                     >
-                      <SelectTrigger size="sm">
+                      <SelectTrigger size="sm" className="w-full">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -308,7 +308,7 @@ export function TariffFormSheet({
                       value={rule.dayType}
                       onValueChange={(v) => updateRule(rule.id, { dayType: v as DayType })}
                     >
-                      <SelectTrigger size="sm">
+                      <SelectTrigger size="sm" className="w-full">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -373,7 +373,7 @@ export function TariffFormSheet({
                 value={form.vehicleType}
                 onValueChange={(v) => setForm({ ...form, vehicleType: v as Tariff["vehicleType"] })}
               >
-                <SelectTrigger id="tariff-vehicle">
+                <SelectTrigger id="tariff-vehicle" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -392,7 +392,7 @@ export function TariffFormSheet({
                 value={form.zoneId ?? "__all"}
                 onValueChange={(v) => setForm({ ...form, zoneId: v === "__all" ? undefined : v })}
               >
-                <SelectTrigger id="tariff-zone">
+                <SelectTrigger id="tariff-zone" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

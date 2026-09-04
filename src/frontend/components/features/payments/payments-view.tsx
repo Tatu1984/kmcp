@@ -73,9 +73,11 @@ export function PaymentsView() {
   const {
     items: rows,
     isLoading,
+    isRefreshing,
     isBusy,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Payment>(
     ["payments", "list"],
     () =>
@@ -486,6 +488,16 @@ export function PaymentsView() {
             options: facetOptions("zoneName"),
           },
         ]}
+        onRefresh={() => {
+          if (!isLiveApi) {
+            toast.info("Demo data", {
+              description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+            });
+            return;
+          }
+          void refresh();
+        }}
+        isRefreshing={isRefreshing}
         // Waits on the reports module, which is what builds a file and emails
         // it. The rows are all in the browser already, but a reconciliation
         // export is a document the authority keeps, not a client-side dump.

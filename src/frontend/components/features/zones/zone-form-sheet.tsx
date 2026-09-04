@@ -183,7 +183,7 @@ export function ZoneFormSheet({
               <div className="space-y-1.5">
                 <Label htmlFor="zone-ward">Ward / division</Label>
                 <Select value={form.wardId} onValueChange={(v) => setForm({ ...form, wardId: v })}>
-                  <SelectTrigger id="zone-ward">
+                  <SelectTrigger id="zone-ward" className="w-full">
                     <SelectValue placeholder="Select a ward" />
                   </SelectTrigger>
                   <SelectContent>
@@ -212,7 +212,7 @@ export function ZoneFormSheet({
                 value={form.vendorId ?? "__none"}
                 onValueChange={(v) => setForm({ ...form, vendorId: v === "__none" ? undefined : v })}
               >
-                <SelectTrigger id="zone-vendor">
+                <SelectTrigger id="zone-vendor" className="w-full">
                   <SelectValue placeholder="Unassigned" />
                 </SelectTrigger>
                 <SelectContent>

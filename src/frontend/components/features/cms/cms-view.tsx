@@ -734,7 +734,7 @@ export function CmsView() {
                 value={faqForm.category}
                 onValueChange={(category) => setFaqForm({ ...faqForm, category })}
               >
-                <SelectTrigger id="faq-category">
+                <SelectTrigger id="faq-category" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -797,7 +797,7 @@ export function CmsView() {
                   setBannerForm({ ...bannerForm, audience: audience as Banner["audience"] })
                 }
               >
-                <SelectTrigger id="banner-audience">
+                <SelectTrigger id="banner-audience" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

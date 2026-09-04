@@ -8,6 +8,7 @@ import {
   Building2,
   ChartNoAxesColumn,
   LandPlot,
+  Loader2,
   MapPin,
   Pencil,
   Phone,
@@ -53,6 +54,7 @@ import { useResource } from "@/frontend/hooks/use-api";
 import { isLiveApi } from "@/config/env";
 import { toAttendant } from "@/frontend/lib/adapters";
 import { downloadCsv } from "@/frontend/lib/csv";
+import { mapWithConcurrency } from "@/frontend/lib/concurrency";
 import type { Attendant } from "@/shared/types/domain.types";
 
 /** What the form holds. `email` is absent because the list never carries one. */
@@ -76,8 +78,10 @@ export function AttendantsView() {
   const {
     items: attendants,
     isLoading,
+    isRefreshing,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Attendant>(
     ["attendants", "list"],
     () =>
@@ -106,6 +110,7 @@ export function AttendantsView() {
   );
   const [selected, setSelected] = React.useState<Attendant | null>(null);
   const [formOpen, setFormOpen] = React.useState(false);
+  const [formBusy, setFormBusy] = React.useState(false);
   const [form, setForm] = React.useState<AttendantDraft>(EMPTY_DRAFT);
   const [deactivateOpen, setDeactivateOpen] = React.useState(false);
   const [unbindOpen, setUnbindOpen] = React.useState(false);
@@ -452,6 +457,16 @@ export function AttendantsView() {
             ],
           },
         ]}
+        onRefresh={() => {
+          if (!isLiveApi) {
+            toast.info("Demo data", {
+              description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+            });
+            return;
+          }
+          void refresh();
+        }}
+        isRefreshing={isRefreshing}
         onExport={(rows, columns) => {
           const file = downloadCsv("attendants", rows, columns);
           toast.success("Export ready", { description: `${rows.length} attendants · ${file}` });
@@ -480,10 +495,8 @@ export function AttendantsView() {
                 onClick={() =>
                   void apply(
                     () =>
-                      Promise.all(
-                        rows.map((a) =>
-                          attendantsApi.unbindDevices(a.id, "Bulk unbind from the portal"),
-                        ),
+                      mapWithConcurrency(rows, 4, (a) =>
+                        attendantsApi.unbindDevices(a.id, "Bulk unbind from the portal"),
                       ),
                     (list) =>
                       list.map((a) => (rows.some((r) => r.id === a.id) ? { ...a, deviceBound: false } : a)),
@@ -554,7 +567,7 @@ export function AttendantsView() {
                 // a transfer, with its own endpoint and its own reason.
                 disabled={Boolean(selected)}
               >
-                <SelectTrigger id="att-vendor">
+                <SelectTrigger id="att-vendor" className="w-full">
                   <SelectValue placeholder="Choose a vendor" />
                 </SelectTrigger>
                 <SelectContent>
@@ -569,7 +582,7 @@ export function AttendantsView() {
             <div className="space-y-1.5">
               <Label htmlFor="att-zone">Default zone</Label>
               <Select value={form.zoneId} onValueChange={(zoneId) => setForm({ ...form, zoneId })}>
-                <SelectTrigger id="att-zone">
+                <SelectTrigger id="att-zone" className="w-full">
                   <SelectValue placeholder="No default zone" />
                 </SelectTrigger>
                 <SelectContent>
@@ -584,11 +597,11 @@ export function AttendantsView() {
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setFormOpen(false)}>
+            <Button variant="outline" onClick={() => setFormOpen(false)} disabled={formBusy}>
               Cancel
             </Button>
             <Button
-              disabled={!canSaveAttendant}
+              disabled={!canSaveAttendant || formBusy}
               onClick={() => {
                 if (!canSaveAttendant) return;
                 const draft = {
@@ -600,6 +613,7 @@ export function AttendantsView() {
                 const vendorName =
                   vendorOptions.find((v) => v.id === form.vendorId)?.orgName ?? "—";
                 const zoneName = zoneOptions.find((z) => z.id === form.zoneId)?.name;
+                setFormBusy(true);
                 void apply(
                   () =>
                     selected
@@ -646,9 +660,11 @@ export function AttendantsView() {
                   // The error is already a toast; leaving the dialog open keeps
                   // what was typed, which matters most when the API rejects an
                   // employee code that is already taken.
-                  .catch(() => undefined);
+                  .catch(() => undefined)
+                  .finally(() => setFormBusy(false));
               }}
             >
+              {formBusy && <Loader2 className="size-4 animate-spin" />}
               {selected ? "Save changes" : "Add attendant"}
             </Button>
           </DialogFooter>

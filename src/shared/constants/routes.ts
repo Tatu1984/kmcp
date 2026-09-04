@@ -9,6 +9,7 @@ export const ROUTES = {
   zones: "/zones",
   zone: (id: string) => `/zones/${id}`,
   slots: "/slots",
+  wards: "/wards",
 
   sessions: "/sessions",
   session: (id: string) => `/sessions/${id}`,

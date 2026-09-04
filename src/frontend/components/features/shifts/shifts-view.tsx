@@ -51,6 +51,7 @@ import { useResource } from "@/frontend/hooks/use-api";
 import { useDocument } from "@/frontend/hooks/use-document";
 import { toShift } from "@/frontend/lib/adapters";
 import { downloadCsv } from "@/frontend/lib/csv";
+import { isLiveApi } from "@/config/env";
 import { formatDateTime, formatMoney, relativeTime } from "@/shared/utils/common.util";
 import type { Shift } from "@/shared/types/domain.types";
 
@@ -58,8 +59,10 @@ export function ShiftsView() {
   const {
     items: shifts,
     isLoading,
+    isRefreshing,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Shift>(
     ["shifts", "list"],
     () => listAll((page, pageSize) => shiftsApi.list({ page, pageSize })).then((r) => r.map(toShift)),
@@ -346,6 +349,16 @@ export function ShiftsView() {
           },
         ]}
         onRowClick={inspect}
+        onRefresh={() => {
+          if (!isLiveApi) {
+            toast.info("Demo data", {
+              description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+            });
+            return;
+          }
+          void refresh();
+        }}
+        isRefreshing={isRefreshing}
         onExport={(rows, columns) => {
           const file = downloadCsv("shifts", rows, columns);
           toast.success("Export ready", { description: `${rows.length} shifts · ${file}` });

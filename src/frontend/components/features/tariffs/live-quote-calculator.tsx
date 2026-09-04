@@ -153,7 +153,7 @@ export function LiveQuoteCalculator() {
                 <Skeleton className="h-9 w-full" />
               ) : (
                 <Select value={zone?.id ?? ""} onValueChange={setZoneId}>
-                  <SelectTrigger id="quote-zone">
+                  <SelectTrigger id="quote-zone" className="w-full">
                     <SelectValue placeholder="Choose a zone" />
                   </SelectTrigger>
                   <SelectContent>
@@ -170,7 +170,7 @@ export function LiveQuoteCalculator() {
             <div className="space-y-1.5">
               <Label htmlFor="quote-vehicle">Vehicle</Label>
               <Select value={vehicleType} onValueChange={(v) => setVehicleType(v as SlotType)}>
-                <SelectTrigger id="quote-vehicle">
+                <SelectTrigger id="quote-vehicle" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -207,7 +207,7 @@ export function LiveQuoteCalculator() {
           <div className="space-y-1.5">
             <Label htmlFor="quote-start">Arrival</Label>
             <Select value={preset} onValueChange={setPreset}>
-              <SelectTrigger id="quote-start">
+              <SelectTrigger id="quote-start" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

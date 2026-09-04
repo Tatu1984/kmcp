@@ -159,8 +159,10 @@ export function TariffsView() {
   const {
     items: tariffs,
     isLoading,
+    isRefreshing,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Tariff>(
     ["tariffs", "list"],
     () => listAll((page, pageSize) => tariffsApi.list({ page, pageSize })).then((r) => r.map(toTariff)),
@@ -477,6 +479,16 @@ export function TariffsView() {
                 ],
               },
             ]}
+            onRefresh={() => {
+              if (!isLiveApi) {
+                toast.info("Demo data", {
+                  description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+                });
+                return;
+              }
+              void refresh();
+            }}
+            isRefreshing={isRefreshing}
             onRowClick={(tariff) => {
               setSelected(tariff);
               setFormOpen(true);
@@ -856,7 +868,7 @@ export function TariffsView() {
                   setDiscountForm({ ...discountForm, kind: v as typeof discountForm.kind })
                 }
               >
-                <SelectTrigger id="discount-kind">
+                <SelectTrigger id="discount-kind" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

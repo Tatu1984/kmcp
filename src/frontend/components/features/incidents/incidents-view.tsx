@@ -48,6 +48,7 @@ import { incidentsApi, usersApi, listAll } from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
 import { toIncident } from "@/frontend/lib/adapters";
 import { downloadCsv } from "@/frontend/lib/csv";
+import { isLiveApi } from "@/config/env";
 import { formatDateTime, relativeTime, titleCase } from "@/shared/utils/common.util";
 import type { Incident, IncidentStatus } from "@/shared/types/domain.types";
 
@@ -55,8 +56,10 @@ export function IncidentsView() {
   const {
     items: incidents,
     isLoading,
+    isRefreshing,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Incident>(
     ["incidents", "list"],
     () =>
@@ -173,11 +176,23 @@ export function IncidentsView() {
         cell: ({ row }) => (
           <div className="max-w-md min-w-0">
             <p className="truncate text-sm">{row.original.description}</p>
-            <p className="truncate text-[11px] text-muted-foreground">
-              {row.original.zoneName}
-              {row.original.plateNumber && ` · ${row.original.plateNumber}`}
-            </p>
+            {row.original.plateNumber && (
+              <p className="truncate text-[11px] text-muted-foreground">
+                {row.original.plateNumber}
+              </p>
+            )}
           </div>
+        ),
+      },
+      {
+        // A real column, not just the caption it used to be under
+        // "description" — the Zone facet below filters on this id, and
+        // `table.getColumn("zoneName")` throws when no column answers to it.
+        accessorKey: "zoneName",
+        header: "Zone",
+        meta: "Zone",
+        cell: ({ row }) => (
+          <span className="truncate text-sm text-muted-foreground">{row.original.zoneName}</span>
         ),
       },
       {
@@ -388,6 +403,16 @@ export function IncidentsView() {
               .map((value) => ({ value, label: value })),
           },
         ]}
+        onRefresh={() => {
+          if (!isLiveApi) {
+            toast.info("Demo data", {
+              description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+            });
+            return;
+          }
+          void refresh();
+        }}
+        isRefreshing={isRefreshing}
         onRowClick={open}
         onExport={(rows, columns) => {
           const file = downloadCsv("incidents", rows, columns);
@@ -522,7 +547,7 @@ export function IncidentsView() {
                       ).catch(() => {});
                     }}
                   >
-                    <SelectTrigger id="assignee">
+                    <SelectTrigger id="assignee" className="w-full">
                       <SelectValue placeholder="Unassigned" />
                     </SelectTrigger>
                     <SelectContent>

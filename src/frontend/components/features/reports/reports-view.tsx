@@ -187,9 +187,11 @@ export function ReportsView() {
   const {
     items: jobs,
     isLoading,
+    isRefreshing,
     isBusy,
     emptyReason,
     apply,
+    refresh,
   } = useResource<ReportJob>(
     ["reports", "list"],
     () => reportsApi.list({ pageSize: 100 }).then((r) => r.data.map(toReportJob)),
@@ -688,6 +690,16 @@ export function ReportsView() {
                 ],
               },
             ]}
+            onRefresh={() => {
+              if (!isLiveApi) {
+                toast.info("Demo data", {
+                  description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+                });
+                return;
+              }
+              void refresh();
+            }}
+            isRefreshing={isRefreshing}
             isLoading={isLoading}
             emptyTitle={emptyReason ? "Nothing to show" : "No reports generated"}
             emptyDescription={
@@ -851,7 +863,7 @@ export function ReportsView() {
             <div className="space-y-1.5">
               <Label htmlFor="report-type">Report</Label>
               <Select value={reportType} onValueChange={setReportType}>
-                <SelectTrigger id="report-type">
+                <SelectTrigger id="report-type" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -894,7 +906,7 @@ export function ReportsView() {
               <div className="space-y-1.5">
                 <Label htmlFor="report-zone">Zone</Label>
                 <Select value={zoneId} onValueChange={setZoneId}>
-                  <SelectTrigger id="report-zone">
+                  <SelectTrigger id="report-zone" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -910,7 +922,7 @@ export function ReportsView() {
               <div className="space-y-1.5">
                 <Label htmlFor="report-vendor">Vendor</Label>
                 <Select value={vendorId} onValueChange={setVendorId}>
-                  <SelectTrigger id="report-vendor">
+                  <SelectTrigger id="report-vendor" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1018,7 +1030,7 @@ export function ReportsView() {
             <div className="space-y-1.5">
               <Label htmlFor="schedule-type">Report</Label>
               <Select value={form.type} onValueChange={(type) => patch({ type })}>
-                <SelectTrigger id="schedule-type">
+                <SelectTrigger id="schedule-type" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1042,7 +1054,7 @@ export function ReportsView() {
                   value={form.frequency}
                   onValueChange={(frequency) => patch({ frequency: frequency as ReportFrequency })}
                 >
-                  <SelectTrigger id="schedule-frequency">
+                  <SelectTrigger id="schedule-frequency" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1079,7 +1091,7 @@ export function ReportsView() {
                   value={String(form.weekday)}
                   onValueChange={(value) => patch({ weekday: Number(value) })}
                 >
-                  <SelectTrigger id="schedule-weekday">
+                  <SelectTrigger id="schedule-weekday" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1115,7 +1127,7 @@ export function ReportsView() {
               <div className="space-y-1.5">
                 <Label htmlFor="schedule-zone">Zone</Label>
                 <Select value={form.zoneId} onValueChange={(zoneId) => patch({ zoneId })}>
-                  <SelectTrigger id="schedule-zone">
+                  <SelectTrigger id="schedule-zone" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1131,7 +1143,7 @@ export function ReportsView() {
               <div className="space-y-1.5">
                 <Label htmlFor="schedule-vendor">Vendor</Label>
                 <Select value={form.vendorId} onValueChange={(vendorId) => patch({ vendorId })}>
-                  <SelectTrigger id="schedule-vendor">
+                  <SelectTrigger id="schedule-vendor" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>

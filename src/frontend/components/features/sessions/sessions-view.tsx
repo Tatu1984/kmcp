@@ -76,8 +76,10 @@ export function SessionsView() {
   const {
     items: sessions,
     isLoading,
+    isRefreshing,
     emptyReason,
     apply,
+    refresh,
   } = useResource<ParkingSession>(
     ["sessions", "list"],
     () =>
@@ -549,6 +551,16 @@ export function SessionsView() {
           },
         ]}
         onRowClick={openSession}
+        onRefresh={() => {
+          if (!isLiveApi) {
+            toast.info("Demo data", {
+              description: "This screen reads from the bundled demo dataset — there is nothing new to fetch.",
+            });
+            return;
+          }
+          void refresh();
+        }}
+        isRefreshing={isRefreshing}
         onExport={(rows, columns) => {
           const file = downloadCsv("sessions", rows, columns);
           toast.success("Export ready", { description: `${rows.length} sessions · ${file}` });
