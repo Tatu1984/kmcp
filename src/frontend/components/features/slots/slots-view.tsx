@@ -496,11 +496,15 @@ export function SlotsView() {
             <div className="space-y-1.5">
               <Label htmlFor="bulk-zone">Zone</Label>
               <Select
-                value={bulk.zoneId || (zoneId === "__all" ? (zones[0]?.id ?? "") : zoneId)}
+                value={bulk.zoneId}
                 onValueChange={(v) => setBulk((b) => ({ ...b, zoneId: v }))}
               >
                 <SelectTrigger id="bulk-zone">
-                  <SelectValue />
+                  {/* Placeholder rather than a defaulted value: the field used to
+                      display the first zone in the list while holding nothing,
+                      so bays quietly went to that zone instead of the one on
+                      screen. An unset picker must look unset. */}
+                  <SelectValue placeholder="Choose a zone" />
                 </SelectTrigger>
                 <SelectContent>
                   {zones.map((z) => (
@@ -558,39 +562,74 @@ export function SlotsView() {
             </Button>
             <Button
               onClick={() => {
-                const targetZone = bulk.zoneId || (zoneId === "__all" ? zones[0]?.id : zoneId);
+                const targetZone = bulk.zoneId;
                 if (!targetZone) {
                   toast.error("Pick a zone for these bays");
                   return;
                 }
+
+                /**
+                 * Number from the first free code, not from 1.
+                 *
+                 * The server skips a code that already exists, so a second run
+                 * of "20 bays" against a zone that already had B001–B020
+                 * created nothing at all — and the screen still said twenty
+                 * bays were added. Starting after the highest existing code
+                 * means a second run does what it says.
+                 */
+                const used = slots
+                  .filter((s) => s.zoneId === targetZone && s.code.startsWith(bulk.prefix))
+                  .map((s) => Number(s.code.slice(bulk.prefix.length)))
+                  .filter((n) => Number.isFinite(n));
+                const from = used.length ? Math.max(...used) + 1 : 1;
+                const to = from + bulk.count - 1;
+
+                let outcome: { created: number; skippedExisting: string[] } | null = null;
+
                 void apply(
-                  () =>
-                    slotsApi.bulkCreate({
+                  async () => {
+                    const { data } = await slotsApi.bulkCreate({
                       zoneId: targetZone,
                       prefix: bulk.prefix,
-                      from: 1,
-                      to: bulk.count,
+                      from,
+                      to,
                       type: bulk.type,
-                    }),
+                    });
+                    outcome = data;
+                  },
                   // The demo path numbers the run the same way the server does.
                   (list) => [
                     ...Array.from({ length: bulk.count }).map((_, i) => ({
-                      id: `slt_new_${targetZone}_${bulk.prefix}${i + 1}`,
+                      id: `slt_new_${targetZone}_${bulk.prefix}${from + i}`,
                       zoneId: targetZone,
                       zoneName: zones.find((z) => z.id === targetZone)?.name ?? "—",
-                      code: `${bulk.prefix}${String(i + 1).padStart(3, "0")}`,
+                      code: `${bulk.prefix}${String(from + i).padStart(3, "0")}`,
                       type: bulk.type,
                       status: "AVAILABLE" as const,
                       isReserved: false,
                     })),
                     ...list,
                   ],
-                  {
-                    success: `${bulk.count} bays created`,
-                    description: `${bulk.prefix}001–${bulk.prefix}${String(bulk.count).padStart(3, "0")} added.`,
-                  },
+                  // No success message here — the real count is only known
+                  // once the server answers, and it is reported below.
                 )
-                  .then(() => setBulkOpen(false))
+                  .then(() => {
+                    setBulkOpen(false);
+                    const created = outcome?.created ?? bulk.count;
+                    const skipped = outcome?.skippedExisting.length ?? 0;
+                    if (created === 0) {
+                      toast.warning("No bays were added", {
+                        description: `All ${skipped} of those codes already exist in this zone.`,
+                      });
+                      return;
+                    }
+                    toast.success(`${created} ${created === 1 ? "bay" : "bays"} created`, {
+                      description:
+                        `${bulk.prefix}${String(from).padStart(3, "0")}–` +
+                        `${bulk.prefix}${String(to).padStart(3, "0")}` +
+                        (skipped ? ` · ${skipped} already existed and were skipped.` : " added."),
+                    });
+                  })
                   .catch(() => undefined);
               }}
             >
