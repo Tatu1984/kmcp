@@ -65,6 +65,12 @@ export function TariffFormSheet({
    * Zones come from the API. A zone id chosen here is sent to the server, and
    * an id from the demo dataset does not exist there — the same foreign-key
    * failure that made saving a zone return an unexplained 422.
+   *
+   * The list is already scoped: GET /zones answers a zone-scoped account with
+   * its own zones only, so this picker cannot offer kerb the caller may not act
+   * on and needs no client-side filter of its own. (Nobody scoped reaches this
+   * sheet in any case — writing a tariff needs `tariff.write`, which a Zone
+   * Officer does not hold.)
    */
   const zones = useApiQuery(["zones", "for-tariff-form"], () =>
     zonesApi.list({ pageSize: 100 }).then((r) => r.data),

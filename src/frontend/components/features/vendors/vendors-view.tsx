@@ -35,6 +35,7 @@ import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StatCard } from "@/frontend/components/shared/stat-card";
 import { DataTable } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
+import { Can } from "@/frontend/components/shared/can";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, PersonCell } from "@/frontend/components/shared/bits";
@@ -44,6 +45,7 @@ import { VENDORS, DASHBOARD } from "@/frontend/lib/mock";
 import { vendorsApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
 import { toVendor } from "@/frontend/lib/adapters";
+import { downloadCsv } from "@/frontend/lib/csv";
 import { ROUTES } from "@/shared/constants/routes";
 import type { Vendor, VendorStatus } from "@/shared/types/domain.types";
 
@@ -72,6 +74,7 @@ export function VendorsView() {
     isLoading,
     emptyReason,
     apply,
+    refresh,
   } = useResource<Vendor>(
     ["vendors", "list"],
     () => listAll((page, pageSize) => vendorsApi.list({ page, pageSize })).then((r) => r.map(toVendor)),
@@ -188,10 +191,19 @@ export function VendorsView() {
               <RowActions
                 label={vendor.orgName}
                 actions={[
-                  { label: "View vendor", icon: Eye, shortcut: "↵", onSelect: () => router.push(ROUTES.vendor(vendor.id)) },
+                  {
+                    label: "View vendor",
+                    icon: Eye,
+                    shortcut: "↵",
+                    // GET /vendors/:id — vendors.controller.ts:56.
+                    permission: "vendor.read",
+                    onSelect: () => router.push(ROUTES.vendor(vendor.id)),
+                  },
                   {
                     label: "Edit details",
                     icon: Pencil,
+                    // PATCH /vendors/:id — vendors.controller.ts:85.
+                    permission: "vendor.write",
                     onSelect: () => {
                       setSelected(vendor);
                       setFormOpen(true);
@@ -200,17 +212,24 @@ export function VendorsView() {
                   {
                     label: "Review KYC",
                     icon: FileCheck2,
+                    // Only navigates. Verifying a document on the page it opens
+                    // needs vendor.approve, and that action carries it there.
+                    permission: "vendor.read",
                     onSelect: () => router.push(`${ROUTES.vendor(vendor.id)}?tab=kyc`),
                   },
                   {
                     label: "Assign zones",
                     icon: LandPlot,
+                    // POST /vendors/:id/zones — vendors.controller.ts:142.
+                    permission: "vendor.write",
                     onSelect: () => router.push(`${ROUTES.vendor(vendor.id)}?tab=zones`),
                   },
                   {
                     label: "Set commission",
                     icon: Percent,
                     separatorBefore: true,
+                    // PATCH /vendors/:id/commission — vendors.controller.ts:158.
+                    permission: "vendor.write",
                     onSelect: () => {
                       setSelected(vendor);
                       setCommission(vendor.commissionPct);
@@ -220,11 +239,27 @@ export function VendorsView() {
                   {
                     label: "Add attendant",
                     icon: UserPlus,
-                    onSelect: () => toast.info("Add attendant", { description: vendor.orgName }),
+                    // POST /attendants — attendants.controller.ts:54.
+                    permission: "attendant.write",
+                    /**
+                     * Takes the officer to the attendants screen with this
+                     * vendor already chosen, rather than growing a second copy
+                     * of the attendant form here.
+                     *
+                     * That form knows things this screen does not — the zone
+                     * roster, the employee-code rules, what an edit sends — and
+                     * two of it would drift apart within a release. Navigating
+                     * with the vendor in the query string is also the pattern
+                     * the rest of this menu already uses for KYC, zones and
+                     * settlements.
+                     */
+                    onSelect: () => router.push(`${ROUTES.attendants}?vendor=${vendor.id}&new=1`),
                   },
                   {
                     label: "View settlements",
                     icon: Coins,
+                    // GET /settlements — settlements.controller.ts:32.
+                    permission: "settlement.read",
                     onSelect: () => router.push(`${ROUTES.settlements}?vendor=${vendor.id}`),
                   },
                   {
@@ -232,6 +267,11 @@ export function VendorsView() {
                     icon: BadgeCheck,
                     hidden: vendor.status !== "PENDING",
                     separatorBefore: true,
+                    // POST /vendors/:id/status — vendors.controller.ts:98. Every
+                    // status change is vendor.approve, not vendor.write: who may
+                    // edit a vendor's bank details and who may let them onto the
+                    // kerb are deliberately different people.
+                    permission: "vendor.approve",
                     onSelect: () => setStatus(vendor, "APPROVED", "Vendor approved"),
                   },
                   {
@@ -239,12 +279,16 @@ export function VendorsView() {
                     icon: BadgeCheck,
                     hidden: vendor.status !== "SUSPENDED" && vendor.status !== "BLOCKED",
                     separatorBefore: true,
+                    // POST /vendors/:id/status — vendors.controller.ts:98.
+                    permission: "vendor.approve",
                     onSelect: () => setStatus(vendor, "APPROVED", "Vendor reinstated"),
                   },
                   {
                     label: "Suspend vendor",
                     icon: Pause,
                     hidden: vendor.status !== "APPROVED",
+                    // POST /vendors/:id/status — vendors.controller.ts:98.
+                    permission: "vendor.approve",
                     onSelect: () => {
                       setSelected(vendor);
                       setSuspendOpen(true);
@@ -256,6 +300,8 @@ export function VendorsView() {
                     destructive: true,
                     hidden: vendor.status === "BLOCKED",
                     separatorBefore: true,
+                    // POST /vendors/:id/status — vendors.controller.ts:98.
+                    permission: "vendor.approve",
                     onSelect: () => {
                       setSelected(vendor);
                       setBlockOpen(true);
@@ -280,16 +326,19 @@ export function VendorsView() {
         title="Vendors"
         description="Parking operators contracted to run kerbside zones — KYC, zone assignment, commission and settlement."
         actions={
-          <Button
-            size="sm"
-            className="h-9"
-            onClick={() => {
-              setSelected(null);
-              setFormOpen(true);
-            }}
-          >
-            <Plus className="size-4" /> Register vendor
-          </Button>
+          // POST /vendors — vendors.controller.ts:70.
+          <Can permission="vendor.write">
+            <Button
+              size="sm"
+              className="h-9"
+              onClick={() => {
+                setSelected(null);
+                setFormOpen(true);
+              }}
+            >
+              <Plus className="size-4" /> Register vendor
+            </Button>
+          </Can>
         }
       />
 
@@ -345,13 +394,18 @@ export function VendorsView() {
           },
         ]}
         onRowClick={(vendor) => router.push(ROUTES.vendor(vendor.id))}
-        onExport={(rows) => toast.success("Export queued", { description: `${rows.length} vendors` })}
+        onExport={(rows, columns) => {
+          const file = downloadCsv("vendors", rows, columns);
+          toast.success("Export ready", { description: `${rows.length} vendors · ${file}` });
+        }}
         bulkActions={(rows, clear) => (
           <>
             <Button
               size="sm"
               variant="outline"
               className="h-7"
+              // Waits on the PDF module for the statement itself and the
+              // messaging module to deliver it. Neither exists yet.
               onClick={() => {
                 toast.success(`Statements emailed to ${rows.length} vendors`);
                 clear();
@@ -359,17 +413,26 @@ export function VendorsView() {
             >
               Email statements
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7"
-              onClick={() => {
-                toast.info(`Settlement run queued for ${rows.length} vendors`);
-                clear();
-              }}
-            >
-              Run settlement
-            </Button>
+            <Can permission="settlement.read">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7"
+                /**
+                 * POST /settlements/generate — settlements.controller.ts:56 —
+                 * needs a period as well as a vendor, and the settlements
+                 * screen already asks for one properly. Rather than invent a
+                 * period here, this stays a prompt to run it there; wiring it
+                 * blind would raise drafts over a window nobody chose.
+                 */
+                onClick={() => {
+                  toast.info(`Settlement run queued for ${rows.length} vendors`);
+                  clear();
+                }}
+              >
+                Run settlement
+              </Button>
+            </Can>
           </>
         )}
         isLoading={isLoading}
@@ -383,6 +446,9 @@ export function VendorsView() {
         open={formOpen}
         onOpenChange={setFormOpen}
         vendor={selected}
+        // A KYC document lands against the vendor, not against this form, so
+        // the list has to be re-read for the "KYC pending" badge to clear.
+        onDocumentUploaded={() => void refresh()}
         onSaved={(draft) =>
           apply(
             () =>

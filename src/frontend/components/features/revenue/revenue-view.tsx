@@ -27,6 +27,7 @@ import {
 } from "@/frontend/components/ui/dropdown-menu";
 import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StatCard } from "@/frontend/components/shared/stat-card";
+import { Can } from "@/frontend/components/shared/can";
 import { Money, OccupancyBar, SectionCard, SplitMeter } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import {
@@ -238,27 +239,42 @@ export function RevenueView() {
               </DropdownMenuContent>
             </DropdownMenu>
 
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" className="h-9">
-                  <Download className="size-4" /> Export
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {["PDF", "Excel", "CSV"].map((format) => (
-                  <DropdownMenuItem
-                    key={format}
-                    onSelect={() =>
-                      toast.success(`${format} export queued`, {
-                        description: `Revenue report · ${rangeLabel}`,
-                      })
-                    }
-                  >
-                    Download as {format}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {/**
+             * The reports module owns exports — POST /reports runs one and
+             * GET /reports/:id/download returns it, both guarded by
+             * `report.generate` (reports.controller.ts:46 and :63). Reading
+             * revenue and being allowed to take a copy of it out of the system
+             * are separate grants, so the page renders for `payment.read` while
+             * this control asks for the export permission.
+             *
+             * Only PDF and Excel wait on the export module; CSV is the one the
+             * reports endpoint already serves. Wiring the range and shape of
+             * this page into a report job belongs with that work rather than
+             * here, so all three stay queued for now.
+             */}
+            <Can permission="report.generate">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" className="h-9">
+                    <Download className="size-4" /> Export
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {["PDF", "Excel", "CSV"].map((format) => (
+                    <DropdownMenuItem
+                      key={format}
+                      onSelect={() =>
+                        toast.success(`${format} export queued`, {
+                          description: `Revenue report · ${rangeLabel}`,
+                        })
+                      }
+                    >
+                      Download as {format}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </Can>
           </>
         }
       />

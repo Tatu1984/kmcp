@@ -5,6 +5,7 @@ import {
   type ColumnDef,
   type ColumnFiltersState,
   type SortingState,
+  type Table as TanstackTable,
   type VisibilityState,
   type RowSelectionState,
   flexRender,
@@ -63,12 +64,65 @@ import {
 import { EmptyState } from "./empty-state";
 import { Skeleton } from "@/frontend/components/ui/skeleton";
 import { PAGE_SIZES, DEFAULT_PAGE_SIZE } from "@/config/app.config";
+import type { CsvColumn } from "@/frontend/lib/csv";
 
 export type FacetFilter = {
   columnId: string;
   label: string;
   options: { value: string; label: string }[];
 };
+
+/**
+ * Facet options read off the rows a table is already showing.
+ *
+ * Building a facet from the bundled demo dataset is what makes a filter look
+ * broken against a real backend: the authority's zones and vendors are not
+ * named after the demo city's, so every option in the dropdown matches zero
+ * rows and picking one empties the table. Options taken from the rows
+ * themselves cannot drift from the data they filter, whatever the source.
+ *
+ * Blank values are dropped — an option with no label is unusable — and the
+ * rest are de-duplicated and sorted the way a reader scans a list.
+ */
+export function facetOptionsFrom<T>(
+  rows: readonly T[],
+  select: (row: T) => string | null | undefined,
+): FacetFilter["options"] {
+  const values = new Set<string>();
+  for (const row of rows) {
+    const value = select(row);
+    if (value) values.add(value);
+  }
+  return [...values].sort((a, b) => a.localeCompare(b)).map((value) => ({ value, label: value }));
+}
+
+/**
+ * The columns an export should carry: the ones on screen, in the order they are
+ * on screen, headed the way the reader saw them.
+ *
+ * Taken from the table's own state rather than from the `columns` prop, so
+ * hiding a column through the View menu hides it in the file too — which is
+ * what someone who just hid it expects. Display-only columns are dropped: the
+ * selection checkbox and the ⋯ menu have no value to write, and a column with
+ * no accessor has nothing to read off the row.
+ *
+ * `meta` is preferred over `header` because it is the fuller label — the header
+ * cell says "Today" where the menu says "Revenue today", and a spreadsheet
+ * column read out of context needs the second one.
+ */
+function exportColumnsOf<T>(table: TanstackTable<T>): CsvColumn<T>[] {
+  return table
+    .getVisibleLeafColumns()
+    .filter((column) => column.id !== "__select" && typeof column.accessorFn === "function")
+    .map((column) => {
+      const { meta, header } = column.columnDef;
+      const accessor = column.accessorFn as (row: T, index: number) => unknown;
+      return {
+        header: String(meta ?? (typeof header === "string" ? header : column.id)),
+        value: (row: T) => accessor(row, 0),
+      };
+    });
+}
 
 export type DataTableProps<T> = {
   data: T[];
@@ -88,7 +142,13 @@ export type DataTableProps<T> = {
   emptyAction?: React.ReactNode;
   /** Shows placeholder rows instead of an empty state while the first load runs. */
   isLoading?: boolean;
-  onExport?: (rows: T[]) => void;
+  /**
+   * Handed the rows that survive the current search and filters, and the
+   * columns currently on screen. Pass both to `downloadCsv` for a file that
+   * matches what the operator is looking at; the second argument is optional to
+   * a caller that only wants the rows.
+   */
+  onExport?: (rows: T[], columns: CsvColumn<T>[]) => void;
   initialPageSize?: number;
   stickyHeader?: boolean;
   className?: string;
@@ -244,7 +304,12 @@ export function DataTable<T extends object>({
 
         <div className="flex items-center gap-2">
           {onExport && (
-            <Button variant="outline" size="sm" className="h-9" onClick={() => onExport(filteredRows)}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9"
+              onClick={() => onExport(filteredRows, exportColumnsOf(table))}
+            >
               <Download className="size-4" /> Export
             </Button>
           )}

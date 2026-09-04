@@ -55,6 +55,39 @@ export interface ApiTariff {
   }[];
 }
 
+/**
+ * A date the pricing rules treat differently.
+ *
+ * `multiplier` arrives as a string: it is a Prisma `Decimal` on the server, and
+ * a decimal serialised through JSON stays a string rather than becoming a float
+ * that rounds ₹0.01 away from a fare. Coerce it at the point of display.
+ */
+export interface ApiHoliday {
+  id: string;
+  date: string;
+  name: string;
+  isEvent: boolean;
+  zoneIds: string[];
+  multiplier?: number | string | null;
+}
+
+export interface ApiDiscount {
+  id: string;
+  name: string;
+  code?: string | null;
+  zoneId?: string | null;
+  vehicleTypeId?: string | null;
+  /** Percentage, as a decimal string. See `ApiHoliday.multiplier`. */
+  percentOff?: number | string | null;
+  /** Paise. */
+  flatOff?: number | null;
+  validFrom: string;
+  validTo: string;
+  maxUses?: number | null;
+  usedCount: number;
+  isActive: boolean;
+}
+
 export const tariffsApi = {
   list: (query: Record<string, string | number | undefined> = {}) =>
     api.get<ApiTariff[]>("/tariffs", { query }),
@@ -86,6 +119,44 @@ export const tariffsApi = {
     api.post(`/tariffs/${id}/publish`, { approvalReference }),
   archive: (id: string, reason: string) => api.delete(`/tariffs/${id}`, { reason }),
 
-  holidays: () => api.get("/holidays"),
-  discounts: () => api.get("/discounts"),
+  holidays: () => api.get<ApiHoliday[]>("/holidays"),
+
+  createHoliday: (body: {
+    date: string;
+    name: string;
+    isEvent?: boolean;
+    zoneIds?: string[];
+    multiplier?: number;
+  }) => api.post<ApiHoliday>("/holidays", body),
+
+  /**
+   * There is no PATCH for a holiday. The calendar is add-and-remove by design —
+   * a date is either in it or it is not — so correcting one means removing it
+   * and adding it back, which is what the two calls above express.
+   */
+  removeHoliday: (id: string) => api.delete(`/holidays/${id}`),
+
+  discounts: () => api.get<ApiDiscount[]>("/discounts"),
+
+  createDiscount: (body: {
+    name: string;
+    code?: string;
+    zoneId?: string;
+    vehicleTypeId?: SlotType;
+    percentOff?: number;
+    flatOff?: number;
+    validFrom: string;
+    validTo: string;
+    maxUses?: number;
+    isActive?: boolean;
+  }) => api.post<ApiDiscount>("/discounts", body),
+
+  /**
+   * `PATCH /discounts/:id` carries one field — `isActive`. Pausing and resuming
+   * is the whole of what the API lets an officer change about a live discount,
+   * which is deliberate: the terms a citizen was quoted under cannot be edited
+   * out from under a redemption that already happened.
+   */
+  setDiscountActive: (id: string, isActive: boolean) =>
+    api.patch<ApiDiscount>(`/discounts/${id}`, { isActive }),
 };

@@ -1,7 +1,7 @@
-import type { Settlement, SettlementLine, ReportJob } from "@/shared/types/domain.types";
+import type { Settlement, SettlementLine, ReportJob, ReportSchedule } from "@/shared/types/domain.types";
 import { VENDORS } from "./partners";
 import { SESSIONS } from "./operations";
-import { makeRng, daysAgo } from "./rng";
+import { makeRng, daysAgo, hoursAhead } from "./rng";
 
 const rng = makeRng(909191);
 
@@ -87,8 +87,91 @@ export const REPORT_JOBS: ReportJob[] = [
   { id: "rpt_007", type: "Daily collection", paramsLabel: "04 Aug 2026 · All vendors", status: "COMPLETED", requestedBy: "Sudipta Banerjee", format: "csv", createdAt: daysAgo(1), completedAt: daysAgo(1), sizeKb: 88 },
 ];
 
-export const SCHEDULED_REPORTS = [
-  { id: "sch_1", type: "Daily collection", cadence: "Every day at 06:00", recipients: "commissioner@kmc.gov.in, audit@kmc.gov.in", format: "xlsx", isActive: true },
-  { id: "sch_2", type: "Vendor settlement", cadence: "Every Monday at 08:00", recipients: "finance@kmc.gov.in", format: "pdf", isActive: true },
-  { id: "sch_3", type: "Occupancy report", cadence: "1st of every month", recipients: "planning@kmc.gov.in", format: "csv", isActive: false },
+/**
+ * Schedules for the demonstration build.
+ *
+ * These are shaped exactly as the API's own rows now, rather than as the loose
+ * placeholders they used to be — a `recipients` string and a `format` the
+ * backend has never produced. A demo dataset whose shape differs from the live
+ * one is a screen that works in the walkthrough and breaks in the field.
+ *
+ * `nextRunAt` is a real instant a few hours out so the "next run" column reads
+ * sensibly whenever the demo is opened, and the third row is a paused schedule
+ * that failed its way there, because that state is the one worth being able to
+ * show an authority.
+ */
+export const SCHEDULED_REPORTS: ReportSchedule[] = [
+  {
+    id: "sch_1",
+    name: "Daily collection summary",
+    type: "daily-collection",
+    label: "Daily collection",
+    frequency: "DAILY",
+    hour: 6,
+    minute: 0,
+    weekday: null,
+    dayOfMonth: null,
+    timezone: "Asia/Kolkata",
+    cadence: "Every day at 06:00 (Asia/Kolkata)",
+    zoneId: null,
+    vendorId: null,
+    paramsLabel: "Yesterday · All zones",
+    channels: ["EMAIL"],
+    ownerName: "Sudipta Banerjee",
+    isActive: true,
+    nextRunAt: hoursAhead(8),
+    lastRunAt: daysAgo(1),
+    lastStatus: "COMPLETED",
+    failureCount: 0,
+    failuresBeforePause: 3,
+  },
+  {
+    id: "sch_2",
+    name: "Monday revenue review",
+    type: "revenue",
+    label: "Revenue report",
+    frequency: "WEEKLY",
+    hour: 8,
+    minute: 0,
+    weekday: 1,
+    dayOfMonth: null,
+    timezone: "Asia/Kolkata",
+    cadence: "Every Monday at 08:00 (Asia/Kolkata)",
+    zoneId: null,
+    vendorId: null,
+    paramsLabel: "The previous 7 days · All zones",
+    channels: ["EMAIL", "WHATSAPP"],
+    ownerName: "Rina Dasgupta",
+    isActive: true,
+    nextRunAt: hoursAhead(52),
+    lastRunAt: daysAgo(5),
+    lastStatus: "COMPLETED",
+    failureCount: 0,
+    failuresBeforePause: 3,
+  },
+  {
+    id: "sch_3",
+    name: "Month-end occupancy",
+    type: "occupancy",
+    label: "Occupancy report",
+    frequency: "MONTHLY",
+    hour: 7,
+    minute: 30,
+    weekday: null,
+    dayOfMonth: 1,
+    timezone: "Asia/Kolkata",
+    cadence: "On day 1 of every month at 07:30 (Asia/Kolkata)",
+    zoneId: null,
+    vendorId: null,
+    paramsLabel: "The previous calendar month · All zones",
+    channels: ["EMAIL"],
+    ownerName: "Planning Cell",
+    isActive: false,
+    nextRunAt: hoursAhead(300),
+    lastRunAt: daysAgo(30),
+    lastStatus: "FAILED",
+    lastError: "The zone this report was narrowed to no longer exists.",
+    failureCount: 3,
+    failuresBeforePause: 3,
+  },
 ];

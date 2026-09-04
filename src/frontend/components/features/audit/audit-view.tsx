@@ -36,20 +36,59 @@ import { RowActions } from "@/frontend/components/shared/row-actions";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { EmptyState } from "@/frontend/components/shared/empty-state";
+import { NOT_PERMITTED } from "@/frontend/components/shared/can";
+import { usePermissions } from "@/frontend/hooks/use-permissions";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/frontend/components/ui/select";
 import { Field, SectionCard } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
-import { auditApi, activityApi, type AuditEntry, type AuthEvent, type LiveSession } from "@/frontend/api";
+import {
+  auditApi,
+  activityApi,
+  documentsApi,
+  type AuditEntry,
+  type AuthEvent,
+  type LiveSession,
+} from "@/frontend/api";
 import { useApiQuery, emptyReason } from "@/frontend/hooks/use-api";
+import { useDocument } from "@/frontend/hooks/use-document";
+import { isLiveApi } from "@/config/env";
 import { formatDateTime, relativeTime } from "@/shared/utils/common.util";
 import { ROLE_LABELS } from "@/shared/constants/roles";
 
 const RISK_TONE = (score?: number | null) =>
   !score ? "neutral" : score >= 60 ? "danger" : score >= 35 ? "warning" : "info";
 
+/** What an auditor actually asks for, in the order they ask for it. */
+const EXPORT_PERIODS = [
+  { days: 7, label: "Last 7 days" },
+  { days: 30, label: "Last 30 days" },
+  { days: 90, label: "Last 90 days" },
+  { days: 365, label: "Last 12 months" },
+] as const;
+
 export function AuditView() {
   const [selected, setSelected] = React.useState<AuditEntry | null>(null);
   const [selectedEvent, setSelectedEvent] = React.useState<AuthEvent | null>(null);
   const [revokeTarget, setRevokeTarget] = React.useState<LiveSession | null>(null);
+  const [exportDays, setExportDays] = React.useState("30");
+  const documents = useDocument();
+
+  /**
+   * Reading this page is `audit.read`; acting on what it shows is not.
+   *
+   * Ending someone's session and vouching for a flagged sign-in both sit on
+   * `user.manage` in `activity.controller.ts` — they change how an account
+   * behaves, and an auditor who may read everything deliberately may not do
+   * either. That distinction is the whole point of an audit role.
+   */
+  const { can } = usePermissions();
+  const canManageAccounts = can("user.manage");
 
   const summary = useApiQuery(["audit", "summary"], () => auditApi.summary().then((r) => r.data));
   const overview = useApiQuery(["activity", "overview"], () => activityApi.overview().then((r) => r.data));
@@ -262,6 +301,7 @@ export function AuditView() {
                 {
                   label: "Mark as legitimate",
                   icon: ShieldCheck,
+                  permission: "user.manage",
                   hidden: !row.original.riskScore || row.original.isTrusted,
                   onSelect: async () => {
                     await activityApi.approve(row.original.id);
@@ -302,17 +342,74 @@ export function AuditView() {
         title="Audit trail"
         description="Every change, sign-in, device and offline sync — recorded by the API, append-only, and never editable from this screen."
         actions={
-          <Button
-            size="sm"
-            className="h-9"
-            onClick={() =>
-              toast.success("Export queued", {
-                description: "A tamper-evident PDF for the selected period will be emailed to you.",
-              })
-            }
-          >
-            <Download className="size-4" /> Export trail
-          </Button>
+          /*
+            GET /documents/audit-trail — documents.controller.ts, on audit.read
+            like every other route on this screen.
+
+            The document is not signed and no longer says it is. This platform
+            holds no signing key, and telling an auditor a PDF with a logo on it
+            is cryptographically signed would be worse than the old disabled
+            button. What it does carry is a SHA-256 of the entries it lists,
+            printed on every page and written into the audit trail itself as an
+            AUDIT_EXPORT entry at the moment of generation. An altered line
+            disagrees with the fingerprint beside it; an altered fingerprint
+            disagrees with the append-only record of what was exported. That is
+            checkable, which the old promise was not.
+
+            The period is explicit because the fingerprint is only worth
+            comparing if two people can agree on exactly what was asked for.
+          */
+          <div className="flex items-center gap-2">
+            <Select value={exportDays} onValueChange={setExportDays}>
+              <SelectTrigger size="sm" className="h-9 w-36" aria-label="Export period">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EXPORT_PERIODS.map((period) => (
+                  <SelectItem key={period.days} value={String(period.days)}>
+                    {period.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              className="h-9"
+              // Still disabled in the demo build, exactly as before: the
+              // document is rendered by the API, and there is no API here. An
+              // enabled button that toasted about it would be the same empty
+              // promise the old one was taken out for.
+              disabled={!isLiveApi || !can("audit.read") || documents.isBusy}
+              title={
+                !isLiveApi
+                  ? "The trail is rendered by the API, which the demo build does not have."
+                  : can("audit.read")
+                    ? undefined
+                    : NOT_PERMITTED
+              }
+              onClick={() => {
+                const to = new Date();
+                const from = new Date(to.getTime() - Number(exportDays) * 24 * 60 * 60 * 1000);
+                void documents.run(
+                  "audit-trail",
+                  () =>
+                    documentsApi.auditTrail({
+                      from: from.toISOString(),
+                      to: to.toISOString(),
+                    }),
+                  {
+                    // Unreachable: the button is disabled without an API.
+                    demo: () => undefined,
+                    success: "Audit trail exported",
+                    description:
+                      "The fingerprint printed on it was recorded in the trail as it was generated.",
+                  },
+                );
+              }}
+            >
+              <Download className="size-4" /> Export trail
+            </Button>
+          </div>
         }
       />
 
@@ -438,6 +535,7 @@ export function AuditView() {
                         {
                           label: "Force sign-out",
                           icon: ShieldAlert,
+                          permission: "user.manage",
                           destructive: true,
                           onSelect: () => setRevokeTarget(s),
                         },
@@ -619,6 +717,8 @@ export function AuditView() {
                   <Button
                     className="w-full"
                     variant="outline"
+                    disabled={!canManageAccounts}
+                    title={canManageAccounts ? undefined : NOT_PERMITTED}
                     onClick={async () => {
                       await activityApi.approve(selectedEvent.id);
                       toast.success("Location trusted");

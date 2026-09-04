@@ -28,8 +28,24 @@ const DOCUMENT_TYPES = [
  * The file goes browser → object storage directly on a presigned URL, and only
  * then is the resulting media id attached to the vendor. Nothing large travels
  * through the API, and a failed upload leaves no half-made document record.
+ *
+ * Pass `type` to skip the menu and collect that one document — the KYC tab of
+ * the vendor form has a row per document type and already knows which one the
+ * officer is looking at. Without it the menu asks.
  */
-export function KycUpload({ vendorId, onUploaded }: { vendorId: string; onUploaded: () => void }) {
+export function KycUpload({
+  vendorId,
+  onUploaded,
+  type,
+  label,
+}: {
+  vendorId: string;
+  onUploaded: () => void;
+  /** Collect exactly this document type instead of offering the menu. */
+  type?: string;
+  /** Button text when a `type` is fixed. Defaults to "Upload". */
+  label?: string;
+}) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [pendingType, setPendingType] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -62,15 +78,40 @@ export function KycUpload({ vendorId, onUploaded }: { vendorId: string; onUpload
     }
   }
 
+  const picker = (
+    <input
+      ref={inputRef}
+      type="file"
+      accept="image/jpeg,image/png,image/webp,application/pdf"
+      className="hidden"
+      onChange={onFile}
+    />
+  );
+
+  if (type) {
+    return (
+      <>
+        {picker}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8"
+          disabled={busy}
+          onClick={() => {
+            setPendingType(type);
+            inputRef.current?.click();
+          }}
+        >
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+          {busy ? "Uploading…" : (label ?? "Upload")}
+        </Button>
+      </>
+    );
+  }
+
   return (
     <>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/jpeg,image/png,image/webp,application/pdf"
-        className="hidden"
-        onChange={onFile}
-      />
+      {picker}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm" className="h-7 text-xs" disabled={busy}>

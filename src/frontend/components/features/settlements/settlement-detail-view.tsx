@@ -27,13 +27,15 @@ import {
 import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StatCard } from "@/frontend/components/shared/stat-card";
 import { RowActions } from "@/frontend/components/shared/row-actions";
+import { Can } from "@/frontend/components/shared/can";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, Money, Plate, SectionCard, SplitMeter } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SETTLEMENTS, VENDORS } from "@/frontend/lib/mock";
-import { settlementsApi, ApiError } from "@/frontend/api";
+import { settlementsApi, documentsApi, ApiError } from "@/frontend/api";
 import { useApiQuery, emptyReason } from "@/frontend/hooks/use-api";
+import { useDocument } from "@/frontend/hooks/use-document";
 import { toSettlement } from "@/frontend/lib/adapters";
 import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
@@ -53,6 +55,7 @@ export function SettlementDetailView({ settlementId }: { settlementId: string })
   const [rejectOpen, setRejectOpen] = React.useState(false);
   const [payoutOpen, setPayoutOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const documents = useDocument();
 
   const settlement = isLiveApi
     ? query.data
@@ -136,35 +139,92 @@ export function SettlementDetailView({ settlementId }: { settlementId: string })
         meta={<StatusBadge status={settlement.status} pulse={settlement.status === "PENDING_APPROVAL"} />}
         actions={
           <>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-9"
-              onClick={() => toast.success("Statement downloaded", { description: `${settlement.reference}.pdf` })}
-            >
-              <Download className="size-4" /> Statement
-            </Button>
-            {settlement.status === "PENDING_APPROVAL" && (
-              <Button size="sm" className="h-9" disabled={busy} onClick={() => setApproveOpen(true)}>
-                <BadgeCheck className="size-4" /> Approve
+            {/*
+              GET /documents/settlements/:id — documents.controller.ts, guarded
+              on settlement.read like the detail route this page already calls,
+              so anyone who can read these figures can file them.
+            */}
+            <Can permission="settlement.read">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-9"
+                disabled={documents.isBusy}
+                onClick={() => {
+                  void documents.run(
+                    settlement.id,
+                    () => documentsApi.settlement(settlement.id),
+                    {
+                      demo: () =>
+                        toast.success("Statement downloaded", {
+                          description: `${settlement.reference}.pdf`,
+                        }),
+                      success: "Statement downloaded",
+                      description: `${settlement.reference}.pdf`,
+                    },
+                  );
+                }}
+              >
+                <Download className="size-4" /> Statement
               </Button>
+            </Can>
+            {settlement.status === "PENDING_APPROVAL" && (
+              // POST /settlements/:id/approve — settlements.controller.ts:85.
+              <Can permission="settlement.approve">
+                <Button size="sm" className="h-9" disabled={busy} onClick={() => setApproveOpen(true)}>
+                  <BadgeCheck className="size-4" /> Approve
+                </Button>
+              </Can>
             )}
             {settlement.status === "APPROVED" && (
-              <Button size="sm" className="h-9" disabled={busy} onClick={() => setPayoutOpen(true)}>
-                <Landmark className="size-4" /> Instruct payout
-              </Button>
+              // POST /settlements/:id/payout — settlements.controller.ts:113. A
+              // different permission from approval on purpose: signing off the
+              // figures and recording that the bank paid are two officers.
+              <Can permission="settlement.payout">
+                <Button size="sm" className="h-9" disabled={busy} onClick={() => setPayoutOpen(true)}>
+                  <Landmark className="size-4" /> Instruct payout
+                </Button>
+              </Can>
             )}
             <RowActions
               label="More"
               actions={[
-                { label: "Print statement", icon: Printer, onSelect: () => toast.success("Statement queued for printing") },
-                { label: "Open vendor", icon: Building2, onSelect: () => window.location.assign(ROUTES.vendor(settlement.vendorId)) },
+                {
+                  label: "Print statement",
+                  icon: Printer,
+                  // The same document as the download beside it, opened in a
+                  // viewer instead of saved. A page cannot drive the print
+                  // dialogue for another origin's PDF from a hidden frame, so a
+                  // tab is the whole of what a browser will allow here.
+                  permission: "settlement.read",
+                  onSelect: () => {
+                    void documents.run(
+                      `${settlement.id}:print`,
+                      () => documentsApi.settlement(settlement.id),
+                      {
+                        demo: () => toast.success("Statement queued for printing"),
+                        mode: "print",
+                        success: "Statement opened for printing",
+                        description: `${settlement.reference}.pdf`,
+                      },
+                    );
+                  },
+                },
+                {
+                  label: "Open vendor",
+                  icon: Building2,
+                  // GET /vendors/:id — vendors.controller.ts:56.
+                  permission: "vendor.read",
+                  onSelect: () => window.location.assign(ROUTES.vendor(settlement.vendorId)),
+                },
                 {
                   label: "Reject settlement",
                   icon: Ban,
                   destructive: true,
                   hidden: settlement.status !== "PENDING_APPROVAL",
                   separatorBefore: true,
+                  // POST /settlements/:id/reject — settlements.controller.ts:100.
+                  permission: "settlement.approve",
                   onSelect: () => setRejectOpen(true),
                 },
               ]}

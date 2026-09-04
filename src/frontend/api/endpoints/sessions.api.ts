@@ -1,5 +1,13 @@
 import { api, type ApiResult } from "../client";
-import type { SessionStatus, SessionSource, SlotType } from "@/shared/types/domain.types";
+import type {
+  IncidentStatus,
+  IncidentType,
+  PaymentMode,
+  PaymentStatus,
+  SessionStatus,
+  SessionSource,
+  SlotType,
+} from "@/shared/types/domain.types";
 
 type Query = Record<string, string | number | boolean | undefined>;
 
@@ -38,6 +46,37 @@ export interface ApiSession {
   /** Server-computed: running time for a live session, final for a closed one. */
   elapsedMinutes?: number | null;
   isOverstay?: boolean;
+  /**
+   * The captured payment, if there is one. Mode only — a listing has no use
+   * for a gateway reference.
+   *
+   * Carried because its absence was worse than its weight: the portal has a
+   * required `paid` flag, had nothing to populate it from, and so asserted
+   * `false` for every row — which rendered every completed session in the city
+   * as unpaid, with an "Unpaid" figure on the screen agreeing with it.
+   * Optional here so a response from an older deployment reads as unpaid rather
+   * than throwing.
+   */
+  payments?: { mode: PaymentMode }[];
+}
+
+/**
+ * What `GET /sessions/:id` adds on top of a list row.
+ *
+ * The list carries only whether a payment was captured and by what mode — the
+ * two facts a table cell shows. Anything that needs a payment *id*, for a
+ * refund or a receipt, still has to fetch the session, and this stays a
+ * separate type so a screen holding a list row cannot quietly assume otherwise.
+ */
+export interface ApiSessionDetail extends ApiSession {
+  payments: {
+    id: string;
+    amount: number;
+    mode: PaymentMode;
+    status: PaymentStatus;
+    createdAt: string;
+  }[];
+  incidents: { id: string; type: IncidentType; status: IncidentStatus; createdAt: string }[];
 }
 
 export interface PlateLookup {
@@ -66,7 +105,7 @@ export const sessionsApi = {
   list: (query: Query = {}): Promise<ApiResult<ApiSession[]>> =>
     api.get<ApiSession[]>("/sessions", { query }),
 
-  get: (idOrCode: string) => api.get<ApiSession>(`/sessions/${idOrCode}`),
+  get: (idOrCode: string) => api.get<ApiSessionDetail>(`/sessions/${idOrCode}`),
 
   live: () =>
     api.get<{

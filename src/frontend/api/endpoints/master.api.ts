@@ -224,6 +224,18 @@ export const settingsApi = {
 
   pages: () => api.get<ApiCmsPage[]>("/cms/pages"),
   page: (slug: string) => api.get<ApiCmsPage>(`/cms/pages/${slug}`),
+
+  /**
+   * The page exactly as a citizen's app receives it.
+   *
+   * Deliberately the public route rather than the editorial one, and
+   * deliberately anonymous: previewing through `/cms/pages/:slug` would render
+   * a draft that no citizen can actually reach, and would answer 200 for a page
+   * the public endpoint answers 404 for. Whether the thing is published is
+   * precisely what a preview is being asked to prove.
+   */
+  publicPage: (slug: string) =>
+    api.get<ApiCmsPage>(`/public/pages/${slug}`, { anonymous: true }),
   upsertPage: (body: { slug: string; title: string; bodyHtml: string; publish: boolean }) =>
     api.put<ApiCmsPage>("/cms/pages", body),
   removePage: (slug: string) => api.delete(`/cms/pages/${slug}`),

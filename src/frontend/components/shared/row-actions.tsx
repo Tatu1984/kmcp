@@ -3,6 +3,9 @@
 import * as React from "react";
 import { MoreHorizontal, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { usePermissions } from "@/frontend/hooks/use-permissions";
+import { NOT_PERMITTED } from "./can";
+import type { PermissionKey } from "@/shared/constants/roles";
 import { Button } from "@/frontend/components/ui/button";
 import {
   DropdownMenu,
@@ -25,6 +28,20 @@ export type RowAction = {
   destructive?: boolean;
   disabled?: boolean;
   hidden?: boolean;
+  /**
+   * The permission this action needs. Resolved by the component rather than at
+   * the call site, so gating cannot be forgotten in one of the twenty-seven
+   * menus — a `permission` that is simply omitted is the only way to opt out,
+   * and that omission is visible in review.
+   *
+   * An action the account may not perform is shown disabled, not removed: an
+   * officer should learn what the platform does and where their authority
+   * stops, rather than see a menu that quietly differs from a colleague's.
+   * Pass `hideWhenDenied` for the few cases where its mere presence would
+   * mislead.
+   */
+  permission?: PermissionKey;
+  hideWhenDenied?: boolean;
   /** Renders a nested submenu instead of a plain item. */
   children?: RowAction[];
   separatorBefore?: boolean;
@@ -47,7 +64,25 @@ export function RowActions({
   trigger?: React.ReactNode;
   className?: string;
 }) {
-  const visible = actions.filter((a) => !a.hidden);
+  const { can, isReady } = usePermissions();
+
+  /**
+   * Denied actions are disabled and explained; only those explicitly marked
+   * `hideWhenDenied` disappear. While the principal is still loading `can()`
+   * answers false, so every permissioned action is briefly disabled — which is
+   * the safe direction to be wrong in.
+   */
+  const resolve = (action: RowAction): RowAction => {
+    if (!action.permission || can(action.permission)) return action;
+    if (action.hideWhenDenied) return { ...action, hidden: true };
+    return {
+      ...action,
+      disabled: true,
+      label: isReady ? `${action.label} — ${NOT_PERMITTED}` : action.label,
+    };
+  };
+
+  const visible = actions.map(resolve).filter((a) => !a.hidden);
   if (visible.length === 0) return null;
 
   return (
@@ -77,6 +112,7 @@ export function RowActions({
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
                   {action.children
+                    .map(resolve)
                     .filter((c) => !c.hidden)
                     .map((child, j) => (
                       <DropdownMenuItem

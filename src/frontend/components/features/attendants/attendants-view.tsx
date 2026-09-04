@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   Ban,
@@ -39,8 +40,9 @@ import {
 } from "@/frontend/components/ui/select";
 import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StatCard } from "@/frontend/components/shared/stat-card";
-import { DataTable } from "@/frontend/components/shared/data-table";
+import { DataTable, facetOptionsFrom } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
+import { Can } from "@/frontend/components/shared/can";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, PersonCell } from "@/frontend/components/shared/bits";
@@ -48,8 +50,27 @@ import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { ATTENDANTS, VENDORS, ZONES } from "@/frontend/lib/mock";
 import { attendantsApi, vendorsApi, zonesApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
+import { isLiveApi } from "@/config/env";
 import { toAttendant } from "@/frontend/lib/adapters";
+import { downloadCsv } from "@/frontend/lib/csv";
 import type { Attendant } from "@/shared/types/domain.types";
+
+/** What the form holds. `email` is absent because the list never carries one. */
+type AttendantDraft = {
+  name: string;
+  employeeCode: string;
+  phone: string;
+  vendorId: string;
+  zoneId: string;
+};
+
+const EMPTY_DRAFT: AttendantDraft = {
+  name: "",
+  employeeCode: "",
+  phone: "",
+  vendorId: "",
+  zoneId: "",
+};
 
 export function AttendantsView() {
   const {
@@ -85,8 +106,53 @@ export function AttendantsView() {
   );
   const [selected, setSelected] = React.useState<Attendant | null>(null);
   const [formOpen, setFormOpen] = React.useState(false);
+  const [form, setForm] = React.useState<AttendantDraft>(EMPTY_DRAFT);
   const [deactivateOpen, setDeactivateOpen] = React.useState(false);
   const [unbindOpen, setUnbindOpen] = React.useState(false);
+
+  const openForm = React.useCallback(
+    (attendant: Attendant | null, presetVendorId?: string) => {
+      setSelected(attendant);
+      setForm({
+        name: attendant?.name ?? "",
+        employeeCode: attendant?.employeeCode ?? "",
+        phone: attendant?.phone ?? "",
+        vendorId: attendant?.vendorId ?? presetVendorId ?? vendorOptions[0]?.id ?? "",
+        zoneId: attendant?.zoneId ?? zoneOptions[0]?.id ?? "",
+      });
+      setFormOpen(true);
+    },
+    [vendorOptions, zoneOptions],
+  );
+
+  /**
+   * The vendor screen sends people here to add staff to one operator.
+   *
+   * It links rather than growing its own copy of this form — this one knows the
+   * zone roster and the employee-code rules, and two of it would drift — so the
+   * vendor arrives in the query string and the form opens already pointed at
+   * them. Fired once: reopening the dialog every time the URL is re-read would
+   * make it impossible to close.
+   */
+  const params = useSearchParams();
+  const presetVendor = params.get("vendor");
+  const wantsNew = params.get("new") === "1";
+  const openedFromUrl = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!wantsNew || openedFromUrl.current) return;
+    openedFromUrl.current = true;
+    setSelected(null);
+    setForm({ ...EMPTY_DRAFT, vendorId: presetVendor ?? "" });
+    setFormOpen(true);
+  }, [wantsNew, presetVendor]);
+
+  /** The API requires all three, and an employee code in its own shape. */
+  const canSaveAttendant =
+    form.name.trim().length > 1 &&
+    form.phone.trim().length > 7 &&
+    /^[A-Za-z0-9-]{2,24}$/.test(form.employeeCode.trim()) &&
+    (Boolean(selected) || form.vendorId !== "");
 
   const columns = React.useMemo<ColumnDef<Attendant, unknown>[]>(
     () => [
@@ -171,20 +237,22 @@ export function AttendantsView() {
                   {
                     label: "Edit attendant",
                     icon: Pencil,
-                    onSelect: () => {
-                      setSelected(attendant);
-                      setFormOpen(true);
-                    },
+                    // PATCH /attendants/:id — attendants.controller.ts:69.
+                    permission: "attendant.write",
+                    onSelect: () => openForm(attendant),
                   },
                   {
                     label: "Call",
                     icon: Phone,
+                    // Hands the number to the operator's machine. No call.
                     onSelect: () => toast.info("Calling", { description: attendant.phone }),
                   },
                   {
                     label: "Assign zone",
                     icon: LandPlot,
                     separatorBefore: true,
+                    // PATCH /attendants/:id — attendants.controller.ts:69.
+                    permission: "attendant.write",
                     children: zoneOptions
                       .slice(0, 8)
                       .map((z) => ({
@@ -203,6 +271,14 @@ export function AttendantsView() {
                   {
                     label: "Move to vendor",
                     icon: Building2,
+                    /**
+                     * POST /attendants/:id/transfer — attendants.controller.ts:115,
+                     * and the only action in this menu guarded by `vendor.write`
+                     * rather than `attendant.write`. Moving somebody between
+                     * operators changes whose payroll and whose settlement they
+                     * land in, so it is treated as an act on the vendors.
+                     */
+                    permission: "vendor.write",
                     children: vendorOptions.map((v) => ({
                       label: v.orgName,
                       onSelect: () =>
@@ -225,6 +301,8 @@ export function AttendantsView() {
                     label: "View GPS trail",
                     icon: MapPin,
                     separatorBefore: true,
+                    // Waits on the sessions work: the positions are recorded per
+                    // session event, and nothing here reads them back as a trail.
                     onSelect: () =>
                       toast.info("GPS trail", {
                         description: `${attendant.name} · check-in and check-out points for today`,
@@ -233,6 +311,9 @@ export function AttendantsView() {
                   {
                     label: "Performance",
                     icon: ChartNoAxesColumn,
+                    // Repeats what is already on the row. A real performance
+                    // view waits on the analytics module, which has no
+                    // per-attendant endpoint yet.
                     onSelect: () =>
                       toast.info("Performance", {
                         description: `${attendant.sessionsToday} sessions today · rating ${attendant.rating}`,
@@ -243,6 +324,8 @@ export function AttendantsView() {
                     icon: SmartphoneNfc,
                     hidden: !attendant.deviceBound,
                     separatorBefore: true,
+                    // POST /attendants/:id/unbind-device — attendants.controller.ts:99.
+                    permission: "attendant.write",
                     onSelect: () => {
                       setSelected(attendant);
                       setUnbindOpen(true);
@@ -252,6 +335,8 @@ export function AttendantsView() {
                     label: attendant.isActive ? "Deactivate" : "Reactivate",
                     icon: attendant.isActive ? UserRoundX : UserCheck,
                     destructive: attendant.isActive,
+                    // POST /attendants/:id/status — attendants.controller.ts:82.
+                    permission: "attendant.write",
                     onSelect: () => {
                       if (attendant.isActive) {
                         setSelected(attendant);
@@ -274,7 +359,7 @@ export function AttendantsView() {
         },
       },
     ],
-    [apply, vendorOptions, zoneOptions],
+    [apply, vendorOptions, zoneOptions, openForm],
   );
 
   const onShift = attendants.filter((a) => a.onShift).length;
@@ -287,16 +372,12 @@ export function AttendantsView() {
         title="Attendants"
         description="Field staff employed by vendors. Each account is bound to one device — a token from an unregistered device is refused."
         actions={
-          <Button
-            size="sm"
-            className="h-9"
-            onClick={() => {
-              setSelected(null);
-              setFormOpen(true);
-            }}
-          >
-            <Plus className="size-4" /> Add attendant
-          </Button>
+          // POST /attendants — attendants.controller.ts:54.
+          <Can permission="attendant.write">
+            <Button size="sm" className="h-9" onClick={() => openForm(null, presetVendor ?? undefined)}>
+              <Plus className="size-4" /> Add attendant
+            </Button>
+          </Can>
         }
       />
 
@@ -342,7 +423,16 @@ export function AttendantsView() {
           {
             columnId: "vendorName",
             label: "Vendor",
-            options: VENDORS.map((v) => ({ value: v.orgName, label: v.orgName })),
+            /**
+             * The employers named in this column. Against a live backend the
+             * demo roster offers vendors no attendant works for, so picking
+             * one empties the table; `vendorOptions` above is the approved
+             * roster, which is right for reassigning an attendant and wrong
+             * here, where an attendant of a suspended vendor is still listed.
+             */
+            options: isLiveApi
+              ? facetOptionsFrom(attendants, (a) => a.vendorName)
+              : VENDORS.map((v) => ({ value: v.orgName, label: v.orgName })),
           },
           {
             columnId: "shift",
@@ -362,13 +452,18 @@ export function AttendantsView() {
             ],
           },
         ]}
-        onExport={(rows) => toast.success("Export queued", { description: `${rows.length} attendants` })}
+        onExport={(rows, columns) => {
+          const file = downloadCsv("attendants", rows, columns);
+          toast.success("Export ready", { description: `${rows.length} attendants · ${file}` });
+        }}
         bulkActions={(rows, clear) => (
           <>
             <Button
               size="sm"
               variant="outline"
               className="h-7"
+              // Waits on the messaging module — credentials go out by SMS, and
+              // no provider is configured.
               onClick={() => {
                 toast.success(`Credentials re-sent to ${rows.length} attendants`);
                 clear();
@@ -376,28 +471,31 @@ export function AttendantsView() {
             >
               Re-send credentials
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7"
-              onClick={() =>
-                void apply(
-                  () =>
-                    Promise.all(
-                      rows.map((a) =>
-                        attendantsApi.unbindDevices(a.id, "Bulk unbind from the portal"),
+            {/* POST /attendants/:id/unbind-device — attendants.controller.ts:99. */}
+            <Can permission="attendant.write">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7"
+                onClick={() =>
+                  void apply(
+                    () =>
+                      Promise.all(
+                        rows.map((a) =>
+                          attendantsApi.unbindDevices(a.id, "Bulk unbind from the portal"),
+                        ),
                       ),
-                    ),
-                  (list) =>
-                    list.map((a) => (rows.some((r) => r.id === a.id) ? { ...a, deviceBound: false } : a)),
-                  { success: `${rows.length} devices unbound` },
-                )
-                  .then(clear)
-                  .catch(() => undefined)
-              }
-            >
-              Unbind devices
-            </Button>
+                    (list) =>
+                      list.map((a) => (rows.some((r) => r.id === a.id) ? { ...a, deviceBound: false } : a)),
+                    { success: `${rows.length} devices unbound` },
+                  )
+                    .then(clear)
+                    .catch(() => undefined)
+                }
+              >
+                Unbind devices
+              </Button>
+            </Can>
           </>
         )}
         isLoading={isLoading}
@@ -419,21 +517,45 @@ export function AttendantsView() {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5 sm:col-span-2">
               <Label htmlFor="att-name">Full name</Label>
-              <Input id="att-name" defaultValue={selected?.name} placeholder="Subhash Das" />
+              <Input
+                id="att-name"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="Subhash Das"
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="att-code">Employee code</Label>
-              <Input id="att-code" defaultValue={selected?.employeeCode} className="font-mono" placeholder="METR-118" />
+              <Input
+                id="att-code"
+                value={form.employeeCode}
+                // Uppercased on the way in because the API uppercases it anyway
+                // — better the officer sees the code they will actually get.
+                onChange={(e) => setForm({ ...form, employeeCode: e.target.value.toUpperCase() })}
+                className="font-mono"
+                placeholder="METR-118"
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="att-phone">Mobile</Label>
-              <Input id="att-phone" defaultValue={selected?.phone} placeholder="+91 98300 00000" />
+              <Input
+                id="att-phone"
+                value={form.phone}
+                onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                placeholder="+919830000000"
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="att-vendor">Vendor</Label>
-              <Select defaultValue={selected?.vendorId ?? vendorOptions[0]?.id}>
+              <Select
+                value={form.vendorId}
+                onValueChange={(vendorId) => setForm({ ...form, vendorId })}
+                // An attendant cannot change employer through an edit — that is
+                // a transfer, with its own endpoint and its own reason.
+                disabled={Boolean(selected)}
+              >
                 <SelectTrigger id="att-vendor">
-                  <SelectValue />
+                  <SelectValue placeholder="Choose a vendor" />
                 </SelectTrigger>
                 <SelectContent>
                   {vendorOptions.map((v) => (
@@ -446,9 +568,9 @@ export function AttendantsView() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="att-zone">Default zone</Label>
-              <Select defaultValue={selected?.zoneId ?? zoneOptions[0]?.id}>
+              <Select value={form.zoneId} onValueChange={(zoneId) => setForm({ ...form, zoneId })}>
                 <SelectTrigger id="att-zone">
-                  <SelectValue />
+                  <SelectValue placeholder="No default zone" />
                 </SelectTrigger>
                 <SelectContent>
                   {zoneOptions.map((z) => (
@@ -466,13 +588,65 @@ export function AttendantsView() {
               Cancel
             </Button>
             <Button
+              disabled={!canSaveAttendant}
               onClick={() => {
-                setFormOpen(false);
-                toast.success(selected ? "Attendant updated" : "Attendant added", {
-                  description: selected
-                    ? selected.name
-                    : "Sign-in credentials sent by SMS to the mobile number.",
-                });
+                if (!canSaveAttendant) return;
+                const draft = {
+                  name: form.name.trim(),
+                  phone: form.phone.trim(),
+                  employeeCode: form.employeeCode.trim(),
+                  defaultZoneId: form.zoneId || undefined,
+                };
+                const vendorName =
+                  vendorOptions.find((v) => v.id === form.vendorId)?.orgName ?? "—";
+                const zoneName = zoneOptions.find((z) => z.id === form.zoneId)?.name;
+                void apply(
+                  () =>
+                    selected
+                      ? // The update DTO omits vendorId on purpose; a change of
+                        // employer goes through /transfer, which records why.
+                        attendantsApi.update(selected.id, draft)
+                      : attendantsApi.create({ ...draft, vendorId: form.vendorId }),
+                  (list) =>
+                    selected
+                      ? list.map((a) =>
+                          a.id === selected.id
+                            ? { ...a, ...draft, zoneId: form.zoneId || undefined, zoneName }
+                            : a,
+                        )
+                      : [
+                          {
+                            id: `att_new_${list.length}`,
+                            name: draft.name,
+                            employeeCode: draft.employeeCode,
+                            phone: draft.phone,
+                            vendorId: form.vendorId,
+                            vendorName,
+                            zoneId: form.zoneId || undefined,
+                            zoneName,
+                            isActive: true,
+                            onShift: false,
+                            // Nobody has signed in on a handset yet, so this is
+                            // a definite false rather than "not known here".
+                            deviceBound: false,
+                            sessionsToday: 0,
+                            collectionToday: 0,
+                            createdAt: new Date().toISOString(),
+                          },
+                          ...list,
+                        ],
+                  {
+                    success: selected ? "Attendant updated" : "Attendant added",
+                    description: selected
+                      ? selected.name
+                      : `${draft.name} · ${vendorName}. They bind a device on their first sign-in.`,
+                  },
+                )
+                  .then(() => setFormOpen(false))
+                  // The error is already a toast; leaving the dialog open keeps
+                  // what was typed, which matters most when the API rejects an
+                  // employee code that is already taken.
+                  .catch(() => undefined);
               }}
             >
               {selected ? "Save changes" : "Add attendant"}

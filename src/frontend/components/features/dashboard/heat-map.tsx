@@ -11,19 +11,28 @@ import {
 import { ZONES } from "@/frontend/lib/mock";
 import { zonesApi, listAll } from "@/frontend/api";
 import { useApiQuery } from "@/frontend/hooks/use-api";
+import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatMoney, percent } from "@/shared/utils/common.util";
 
 /**
  * A treemap-style occupancy heat map. Tile area is capacity, tile colour is
  * utilisation — so a big red tile is the zone that needs attention first.
+ *
+ * `GET /zones` is zone-scoped server-side, so a Zone Officer's map is already
+ * their wards and nobody else's — there is nothing to filter here, and adding
+ * a client-side filter over `zoneIds` would only be a second, weaker copy of a
+ * rule the API already enforces at the query.
  */
 export function OccupancyHeatMap() {
   const query = useApiQuery(["zones", "heatmap"], () =>
     listAll((page, pageSize) => zonesApi.list({ page, pageSize })),
   );
 
-  const zones = [...(query.data ?? ZONES)]
+  // The demo roster is the fallback for a laptop walkthrough, never for a live
+  // deployment: a slow or refused request drew the demo city's kerb onto a real
+  // authority's dashboard, tiles an operator could click through to nothing.
+  const zones = [...(isLiveApi ? (query.data ?? []) : ZONES)]
     .map((zone) => ({
       id: zone.id,
       code: zone.code,
@@ -91,7 +100,12 @@ export function OccupancyHeatMap() {
                     ? `${zone.status.replace("_", " ").toLowerCase()} — ${zone.closureReason ?? "not accepting vehicles"}`
                     : `${zone.occupied} of ${zone.capacity} bays occupied`}
                 </p>
-                <p className="text-xs">Today: {formatMoney(zone.revenueToday)}</p>
+                {/* Omitted rather than shown as ₹0 for a zone the list was
+                    never asked about — only the demo set carries a per-zone
+                    revenue figure, as the note on `revenueToday` above says. */}
+                {zone.revenueToday !== undefined && (
+                  <p className="text-xs">Today: {formatMoney(zone.revenueToday)}</p>
+                )}
               </TooltipContent>
             </Tooltip>
           );

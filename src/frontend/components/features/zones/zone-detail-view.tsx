@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Activity,
   BadgeIndianRupee,
@@ -27,6 +28,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/frontend/components/ui/al
 import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StatCard } from "@/frontend/components/shared/stat-card";
 import { RowActions } from "@/frontend/components/shared/row-actions";
+import { Can } from "@/frontend/components/shared/can";
 import { StatusBadge, AvailabilityBadge } from "@/frontend/components/shared/status-badge";
 import {
   Field,
@@ -50,9 +52,11 @@ import {
   tariffsApi,
   incidentsApi,
   attendantsApi,
+  documentsApi,
   listAll,
 } from "@/frontend/api";
 import { useApiQuery, useResource } from "@/frontend/hooks/use-api";
+import { useDocument } from "@/frontend/hooks/use-document";
 import {
   toZone,
   toZonePayload,
@@ -75,6 +79,7 @@ import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
 import type { Zone } from "@/shared/types/domain.types";
 
 export function ZoneDetailView({ zoneId }: { zoneId: string }) {
+  const router = useRouter();
   const demoZone = ZONES.find((z) => z.id === zoneId);
 
   /**
@@ -91,6 +96,7 @@ export function ZoneDetailView({ zoneId }: { zoneId: string }) {
     demoZone ? [demoZone] : [],
   );
   const zone = items[0];
+  const documents = useDocument();
   const [editOpen, setEditOpen] = React.useState(false);
   const [statusOpen, setStatusOpen] = React.useState(false);
 
@@ -183,28 +189,52 @@ export function ZoneDetailView({ zoneId }: { zoneId: string }) {
         }
         actions={
           <>
-            <Button variant="outline" size="sm" className="h-9" onClick={() => setStatusOpen(true)}>
-              <ToggleLeft className="size-4" /> Change status
-            </Button>
-            <Button size="sm" className="h-9" onClick={() => setEditOpen(true)}>
-              <Pencil className="size-4" /> Edit zone
-            </Button>
+            {/* POST /zones/:id/status — zones.controller.ts:118 */}
+            <Can permission="zone.status">
+              <Button variant="outline" size="sm" className="h-9" onClick={() => setStatusOpen(true)}>
+                <ToggleLeft className="size-4" /> Change status
+              </Button>
+            </Can>
+            {/* PATCH /zones/:id — zones.controller.ts:105 */}
+            <Can permission="zone.write">
+              <Button size="sm" className="h-9" onClick={() => setEditOpen(true)}>
+                <Pencil className="size-4" /> Edit zone
+              </Button>
+            </Can>
             <RowActions
               label="More"
               actions={[
                 {
                   label: "Manage slots",
                   icon: SquareStack,
-                  onSelect: () => toast.info("Opening slot manager for this zone"),
+                  // The slots screen filters on this zone; GET /slots is
+                  // guarded on zone.read (slots.controller.ts:32).
+                  permission: "zone.read",
+                  onSelect: () => router.push(`${ROUTES.slots}?zone=${zone.id}`),
                 },
                 {
                   label: "Print zone signage",
                   icon: Printer,
-                  onSelect: () =>
-                    toast.success("Signage sheet queued", {
+                  // GET /documents/zones/:id/signage — documents.controller.ts,
+                  // on zone.read like GET /zones/:id. The board carries only
+                  // published rates in force and the zone's own QR, resolved
+                  // server-side the way the fare engine resolves them — so it
+                  // cannot advertise a rate nobody would be charged.
+                  permission: "zone.read",
+                  onSelect: () => {
+                    void documents.run(zone.id, () => documentsApi.zoneSignage(zone.id), {
+                      demo: () =>
+                        toast.success("Signage sheet queued", {
+                          description: `${zone.code} · tariff board and QR for ${zone.name}`,
+                        }),
+                      mode: "print",
+                      success: "Signage opened for printing",
                       description: `${zone.code} · tariff board and QR for ${zone.name}`,
-                    }),
+                    });
+                  },
                 },
+                // The clipboard and the map are the browser's own doing; no
+                // request, so no permission to check.
                 {
                   label: "Copy GPS centre",
                   icon: Copy,

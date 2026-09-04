@@ -24,20 +24,49 @@ import { Button } from "@/frontend/components/ui/button";
 import { Badge } from "@/frontend/components/ui/badge";
 import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StatCard } from "@/frontend/components/shared/stat-card";
-import { DataTable } from "@/frontend/components/shared/data-table";
+import { DataTable, facetOptionsFrom } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
+import { Can } from "@/frontend/components/shared/can";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, Plate } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SessionDetailSheet } from "./session-detail-sheet";
+import {
+  IncidentFormSheet,
+  type IncidentDraft,
+  type IncidentSubject,
+} from "@/frontend/components/features/incidents/incident-form-sheet";
 import { SESSIONS, ZONES } from "@/frontend/lib/mock";
-import { sessionsApi, listAll } from "@/frontend/api";
+import {
+  sessionsApi,
+  incidentsApi,
+  documentsApi,
+  listAll,
+  messagingApi,
+  channelLabel,
+  type MessageChannel,
+} from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
+import { useMessaging } from "@/frontend/hooks/use-messaging";
+import { useDocument } from "@/frontend/hooks/use-document";
+import { isLiveApi } from "@/config/env";
 import { toSession } from "@/frontend/lib/adapters";
+import { downloadCsv } from "@/frontend/lib/csv";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatDuration, formatTime, relativeTime } from "@/shared/utils/common.util";
 import { VEHICLE_TYPE_LABELS, PAYMENT_MODE_LABELS } from "@/config/app.config";
 import type { ParkingSession } from "@/shared/types/domain.types";
+
+/**
+ * The three channels a receipt can go out on, in the order an officer reaches
+ * for them. Declared once here and reused by the row menu and the bulk bar, so
+ * the two cannot come to offer different channels.
+ */
+const CHANNELS: { channel: MessageChannel; label: string }[] = [
+  { channel: "SMS", label: "By SMS" },
+  { channel: "WHATSAPP", label: "By WhatsApp" },
+  { channel: "EMAIL", label: "By email" },
+];
 
 export function SessionsView() {
   const params = useSearchParams();
@@ -56,6 +85,14 @@ export function SessionsView() {
   );
   const [selected, setSelected] = React.useState<ParkingSession | null>(null);
   const [sheetOpen, setSheetOpen] = React.useState(false);
+  // The subject outlives the open flag on purpose: clearing it on close would
+  // swap the sheet to its zone-picker form mid-close animation.
+  const [incidentOpen, setIncidentOpen] = React.useState(false);
+  const [incidentSubject, setIncidentSubject] = React.useState<IncidentSubject | null>(null);
+  const { send } = useMessaging();
+  // Only `run` is taken: it is referentially stable, so the column memo below
+  // can keep its empty dependency list honest.
+  const { run: runDocument } = useDocument();
 
   const zoneFilter = params.get("zone");
   const statusFilter = params.get("status");
@@ -67,9 +104,95 @@ export function SessionsView() {
     return list;
   }, [sessions, zoneFilter, statusFilter]);
 
+  /**
+   * The name of the zone the URL narrowed the list to.
+   *
+   * Every session carries its zone's name, so the list already in hand answers
+   * this against a live backend — where the demo roster, which knows only the
+   * demo city's zones, would leave the badge blank. The roster is still the
+   * answer with no backend configured, and is consulted only then.
+   */
+  const zoneFilterName = React.useMemo(() => {
+    if (!zoneFilter) return undefined;
+    if (!isLiveApi) return ZONES.find((z) => z.id === zoneFilter)?.name;
+    return sessions.find((s) => s.zoneId === zoneFilter)?.zoneName;
+  }, [sessions, zoneFilter]);
+
   const openSession = (session: ParkingSession) => {
     setSelected(session);
     setSheetOpen(true);
+  };
+
+  /**
+   * Re-sends the receipt for one or many sessions.
+   *
+   * The ids handed over are session ids, not payment ids — the API resolves the
+   * captured payment behind each one. It also refuses any session whose payment
+   * never produced a receipt, and says so, rather than issuing a second receipt
+   * number for a document that already exists.
+   */
+  const resendReceipt = React.useCallback(
+    (sessionIds: string[], channels: MessageChannel[], subject: string) =>
+      void send(() => messagingApi.sendReceipts({ sessionIds, channels }), {
+        success:
+          sessionIds.length === 1
+            ? "Receipt re-sent"
+            : `Receipts re-sent for ${sessionIds.length} sessions`,
+        description: `${subject} · by ${channels.map(channelLabel).join(" and ")}`,
+      }),
+    [send],
+  );
+
+  /**
+   * Downloads the parking receipt for a session.
+   *
+   * A list row does not carry a payment id — `ApiSessionDetail` says why: fifty
+   * sessions dragging every payment with them is not a page anybody wants — so
+   * the session is fetched first and its captured payment found. A refunded
+   * payment still has a receipt and still needs one, which is why
+   * PARTIALLY_REFUNDED counts here as much as CAPTURED does.
+   */
+  const downloadReceipt = React.useCallback(async (session: ParkingSession): Promise<void> => {
+    if (!isLiveApi) {
+      toast.success("Receipt downloaded", { description: `${session.code}.pdf` });
+      return;
+    }
+
+    let paymentId: string | undefined;
+    try {
+      const detail = await sessionsApi.get(session.id);
+      paymentId = detail.data.payments.find(
+        (payment) => payment.status === "CAPTURED" || payment.status === "PARTIALLY_REFUNDED",
+      )?.id;
+    } catch {
+      toast.error("The session could not be read, so its receipt cannot be fetched.");
+      return;
+    }
+
+    if (!paymentId) {
+      toast.info("No receipt for this session", {
+        description: `${session.code} has no captured payment behind it.`,
+      });
+      return;
+    }
+
+    const captured = paymentId;
+    await runDocument(session.id, () => documentsApi.receipt(captured), {
+      demo: () => undefined,
+      success: "Receipt downloaded",
+      description: session.code,
+    });
+  }, [runDocument]);
+
+  const reportIncident = (session: ParkingSession) => {
+    setIncidentSubject({
+      id: session.id,
+      code: session.code,
+      plateNumber: session.plateNumber,
+      zoneId: session.zoneId,
+      zoneName: session.zoneName,
+    });
+    setIncidentOpen(true);
   };
 
   const columns = React.useMemo<ColumnDef<ParkingSession, unknown>[]>(
@@ -181,6 +304,9 @@ export function SessionsView() {
               <RowActions
                 label={session.code}
                 actions={[
+                  // Opening the sheet and copying a code touch no endpoint —
+                  // both work entirely off the row already on screen, which
+                  // `session.read` gated when the list was fetched.
                   { label: "View session", icon: Eye, shortcut: "↵", onSelect: () => openSession(session) },
                   {
                     label: "Copy session code",
@@ -193,6 +319,12 @@ export function SessionsView() {
                   {
                     label: "Extend by",
                     icon: TimerReset,
+                    // Still a toast: there is no extend endpoint. The sessions
+                    // module has start, end and cancel only — extending has to
+                    // re-quote the fare against the tariff version in force,
+                    // so it waits on a session-extend endpoint in the sessions
+                    // module. Ungated until then; the permission it will need
+                    // is whatever that route is guarded on.
                     hidden: !live,
                     separatorBefore: true,
                     children: [30, 60, 120].map((mins) => ({
@@ -204,42 +336,68 @@ export function SessionsView() {
                     })),
                   },
                   {
-                    label: "Call citizen",
+                    label: "Copy citizen's number",
                     icon: Phone,
+                    // Not a messaging-module gap: a browser cannot place a call
+                    // and dialling one needs a telephony bridge the API does not
+                    // have. It hands the number over rather than claiming a
+                    // connection it never made.
                     hidden: !session.citizenPhone,
-                    onSelect: () =>
-                      toast.info("Connecting call", { description: session.citizenPhone }),
+                    onSelect: () => {
+                      if (!session.citizenPhone) return;
+                      void navigator.clipboard.writeText(session.citizenPhone);
+                      toast.success("Number copied", { description: session.citizenPhone });
+                    },
                   },
                   {
                     label: "Re-send receipt",
                     icon: Send,
+                    // POST /messaging/receipts — messaging.controller.ts, on
+                    // payment.read, the same grant POST /payments/:id/receipt
+                    // carries. The route takes session ids as well as payment
+                    // ids precisely because this list holds the former and not
+                    // the latter; the server resolves the captured payment.
+                    permission: "payment.read",
                     hidden: live || !session.paid,
-                    children: [
-                      { label: "By SMS", onSelect: () => toast.success("Receipt sent by SMS") },
-                      { label: "By WhatsApp", onSelect: () => toast.success("Receipt sent on WhatsApp") },
-                      { label: "By email", onSelect: () => toast.success("Receipt emailed") },
-                    ],
+                    children: CHANNELS.map(({ channel, label }) => ({
+                      label,
+                      permission: "payment.read" as const,
+                      onSelect: () => resendReceipt([session.id], [channel], session.code),
+                    })),
                   },
                   {
                     label: "Download receipt",
                     icon: Receipt,
+                    // GET /documents/receipts/:paymentId — documents.controller.ts,
+                    // on payment.read like every other receipt route. The list
+                    // row has no payment id, so `downloadReceipt` fetches the
+                    // session first; that is the same reason the re-send route
+                    // takes session ids and resolves the payment server-side.
+                    permission: "payment.read",
                     hidden: live || !session.paid,
-                    onSelect: () => toast.success("Receipt downloaded", { description: `${session.code}.pdf` }),
+                    onSelect: () => void downloadReceipt(session),
                   },
                   {
                     label: "Open zone",
                     icon: MapPin,
+                    // GET /zones/:id — zones.controller.ts:79
+                    permission: "zone.read",
                     separatorBefore: true,
                     onSelect: () => window.location.assign(ROUTES.zone(session.zoneId)),
                   },
                   {
                     label: "Report an incident",
                     icon: ShieldAlert,
-                    onSelect: () => toast.info("Opening incident form", { description: session.code }),
+                    // POST /incidents — incidents.controller.ts:55, guarded on
+                    // session.read rather than incident.manage.
+                    permission: "session.read",
+                    onSelect: () => reportIncident(session),
                   },
                   {
                     label: "Cancel session",
                     icon: Ban,
+                    // POST /sessions/:id/cancel — sessions.controller.ts:111
+                    permission: "session.cancel",
                     destructive: true,
                     hidden: !live,
                     separatorBefore: true,
@@ -252,7 +410,7 @@ export function SessionsView() {
         },
       },
     ],
-    [],
+    [resendReceipt, downloadReceipt],
   );
 
   const activeCount = data.filter((s) => s.status === "ACTIVE").length;
@@ -268,7 +426,9 @@ export function SessionsView() {
         meta={
           zoneFilter ? (
             <Badge variant="secondary" className="gap-1">
-              Filtered to {ZONES.find((z) => z.id === zoneFilter)?.name}
+              {/* A zone with no sessions yet names itself nowhere, so the badge
+                  says what it is doing rather than trailing off mid-sentence. */}
+              Filtered to {zoneFilterName ?? "one zone"}
               <Link href={ROUTES.sessions} className="ml-1 underline-offset-2 hover:underline">
                 clear
               </Link>
@@ -338,28 +498,56 @@ export function SessionsView() {
           {
             columnId: "zoneName",
             label: "Zone",
-            options: ZONES.map((z) => ({ value: z.name, label: z.name })),
+            /**
+             * The zones these sessions actually happened in. Against a live
+             * backend the demo roster names zones no row has ever heard of,
+             * so every option it offers filters the table to nothing. With no
+             * backend the roster stays — it is the demo's own data, and it
+             * lets the walkthrough filter to a zone that is simply quiet.
+             */
+            options: isLiveApi
+              ? facetOptionsFrom(data, (s) => s.zoneName)
+              : ZONES.map((z) => ({ value: z.name, label: z.name })),
           },
         ]}
         onRowClick={openSession}
-        onExport={(rows) =>
-          toast.success("Export queued", {
-            description: `${rows.length} sessions · CSV will be emailed to you.`,
-          })
-        }
+        onExport={(rows, columns) => {
+          const file = downloadCsv("sessions", rows, columns);
+          toast.success("Export ready", { description: `${rows.length} sessions · ${file}` });
+        }}
         bulkActions={(rows, clear) => (
           <>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7"
-              onClick={() => {
-                toast.success(`Receipts re-sent for ${rows.length} sessions`);
-                clear();
-              }}
-            >
-              <Send className="size-3.5" /> Re-send receipts
-            </Button>
+            {/**
+              * One request for the whole selection rather than one per row: the
+              * API caps a bulk send at two hundred and answers with a count of
+              * what actually went out, which is the number this bar should be
+              * reporting. Paid sessions only — a receipt for money that was
+              * never taken is not a document that exists.
+              */}
+            <Can permission="payment.read">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7"
+                onClick={() => {
+                  const payable = rows.filter((s) => s.paid);
+                  if (payable.length === 0) {
+                    toast.error("Nothing to send", {
+                      description: "None of the selected sessions has been paid.",
+                    });
+                    return;
+                  }
+                  resendReceipt(
+                    payable.map((s) => s.id),
+                    ["SMS", "EMAIL"],
+                    `${payable.length} sessions`,
+                  );
+                  clear();
+                }}
+              >
+                <Send className="size-3.5" /> Re-send receipts
+              </Button>
+            </Can>
             <Button
               size="sm"
               variant="outline"
@@ -392,6 +580,25 @@ export function SessionsView() {
           )
         }
         onExtended={(id) => apply(async () => undefined, (list) => list.map((s) => (s.id === id ? { ...s } : s)))}
+      />
+
+      {/**
+       * The same form the incidents screen raises reports from, opened with the
+       * session attached. The write goes through this screen's `apply` with a
+       * no-op list update: it is not a session that changed, but `apply` is
+       * what owns the live call, the error toast and the demo-mode branch, and
+       * a report raised in demo mode should still say so.
+       */}
+      <IncidentFormSheet
+        open={incidentOpen}
+        onOpenChange={setIncidentOpen}
+        session={incidentSubject}
+        onSubmit={(draft: IncidentDraft) =>
+          apply(() => incidentsApi.create(draft), (list) => list, {
+            success: "Incident reported",
+            description: `${incidentSubject?.code} · now in the open queue`,
+          })
+        }
       />
     </div>
   );

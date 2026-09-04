@@ -1,5 +1,5 @@
 import { api, setTokens, deviceId, type ApiResult } from "../client";
-import type { Role } from "@/shared/constants/roles";
+import type { PermissionKey, Role } from "@/shared/constants/roles";
 
 export interface TokenPair {
   accessToken: string;
@@ -31,6 +31,29 @@ export interface MeResponse extends Principal {
   lastLoginAt?: string;
   createdAt: string;
   zoneIds: string[];
+  /**
+   * What this account may actually do, resolved from its role server-side.
+   *
+   * The portal gates on these rather than on the role code, because roles are
+   * rows the authority edits — a deployment that branched on `role === "ADMIN"`
+   * would be wrong the moment someone changed what ADMIN means.
+   */
+  permissions: PermissionKey[];
+  /** True when the account may only operate inside `zoneIds`. */
+  isZoneScoped: boolean;
+  /** Unrestricted by definition; holds every permission in the catalogue. */
+  isSuperuser: boolean;
+}
+
+/** A device bound to the signed-in account. */
+export interface AuthDevice {
+  id: string;
+  platform: string;
+  fingerprint: string;
+  appVersion?: string | null;
+  isActive: boolean;
+  lastSeenAt?: string | null;
+  createdAt: string;
 }
 
 export const authApi = {
@@ -72,9 +95,21 @@ export const authApi = {
   changePassword: (currentPassword: string, newPassword: string, confirmPassword: string) =>
     api.post("/auth/password/change", { currentPassword, newPassword, confirmPassword }),
 
+  /**
+   * Ends every session on this account, including the one making the call.
+   *
+   * The API has no notion of "every session but this one" — a refresh-token
+   * family is revoked wholesale — so the caller has to sign out afterwards
+   * rather than tell the operator they are still safely signed in here.
+   */
+  logoutAll: () => api.post<{ revokedSessions: number }>("/auth/logout-all"),
+
   setupTwoFactor: () => api.post<{ secret: string; otpauthUrl: string }>("/auth/two-factor/setup"),
 
   confirmTwoFactor: (code: string) => api.post<{ enabled: true }>("/auth/two-factor/confirm", { code }),
 
-  devices: () => api.get("/auth/devices"),
+  devices: () => api.get<AuthDevice[]>("/auth/devices"),
+
+  /** Releases one bound device. It has to sign in again to be re-bound. */
+  unbindDevice: (id: string) => api.delete<{ unbound: true }>(`/auth/devices/${id}`),
 };

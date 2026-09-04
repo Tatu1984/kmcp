@@ -58,6 +58,20 @@ const clientSchema = z.object({
     .optional()
     .transform((v) => v?.replace(/\/+$/, "")),
   NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: z.string().optional(),
+
+  /**
+   * Where browser errors are reported.
+   *
+   * Separate from the server's `SENTRY_DSN` above, and necessarily so: only
+   * NEXT_PUBLIC_ variables are compiled into the bundle, and the failures worth
+   * hearing about — a table that will not load, a save that returns a 500 —
+   * happen in the browser. A DSN is a write-only ingest endpoint and is meant
+   * to be public, so this leaks nothing that setting it does not already imply.
+   *
+   * Unset means no reporting at all rather than a degraded one. The demo build
+   * runs on bundled data with no backend and must not need a Sentry account.
+   */
+  NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
 });
 
 /**
@@ -115,6 +129,7 @@ function parseClientEnv(): ClientEnv {
   const configured = {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
     NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY: process.env.NEXT_PUBLIC_GOOGLE_MAPS_BROWSER_KEY,
+    NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
   };
 
   // An empty string is how an unset variable reaches a build on most hosts.

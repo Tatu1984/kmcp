@@ -50,9 +50,12 @@ import { PageHeader } from "@/frontend/components/shared/page-header";
 import { RowActions } from "@/frontend/components/shared/row-actions";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
+import { Can, NOT_PERMITTED } from "@/frontend/components/shared/can";
+import { usePermissions } from "@/frontend/hooks/use-permissions";
 import { Field, SectionCard } from "@/frontend/components/shared/bits";
+import { RetentionPanel } from "./retention-panel";
 import { PORTAL_USERS } from "@/frontend/lib/mock";
-import { usersApi, rbacApi, settingsApi, ApiError } from "@/frontend/api";
+import { usersApi, rbacApi, settingsApi, authApi, deviceId, ApiError } from "@/frontend/api";
 import { isLiveApi } from "@/config/env";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
 import { toUser } from "@/frontend/lib/adapters";
@@ -77,11 +80,23 @@ const TABS = [
 
 export function SettingsView() {
   const params = useSearchParams();
-  const { user: me } = useSession();
+  const { user: me, signOut } = useSession();
+
+  /**
+   * Two permissions cover this screen, and they are not the same one.
+   *
+   * `config.write` is what the API guards `/config` with — the general, tax and
+   * notification tabs. `user.manage` guards `/users` and `/rbac`, which is the
+   * roles matrix and the portal roster. An administrator may hold one without
+   * the other, so the save buttons are gated separately rather than on a single
+   * "may edit settings" idea the API does not have.
+   */
+  const { can } = usePermissions();
+  const canWriteConfig = can("config.write");
+  const canManageUsers = can("user.manage");
   const [tab, setTab] = React.useState(params.get("tab") ?? "general");
   const [dirty, setDirty] = React.useState(false);
   const [revokeOpen, setRevokeOpen] = React.useState(false);
-  const [wipeOpen, setWipeOpen] = React.useState(false);
   const [passwordOpen, setPasswordOpen] = React.useState(false);
   const [passwordTarget, setPasswordTarget] = React.useState<User | null>(null);
   const [newPassword, setNewPassword] = React.useState("");
@@ -165,6 +180,67 @@ export function SettingsView() {
     if (Object.keys(draft).length > 0) return draft;
     return Object.fromEntries(matrixRoles.map((r) => [r.code, new Set(r.permissions)]));
   }, [draft, matrixRoles]);
+
+  /**
+   * The devices bound to this account.
+   *
+   * The list used to be one hard-coded row reading "This device", which is the
+   * one thing a signed-in browser already knows. `GET /auth/devices` returns
+   * the real estate, and the row for the fingerprint this browser presents at
+   * sign-in is the current one — which is how the list knows not to offer to
+   * sign you out of the session you are reading it in.
+   */
+  const devices = useApiQuery(["auth", "devices"], () => authApi.devices().then((r) => r.data));
+  // Read once, in an initialiser: `deviceId()` mints and stores an id the first
+  // time it is asked, which is a side effect and has no business in a render.
+  const [thisFingerprint] = React.useState(() =>
+    typeof window === "undefined" ? "" : deviceId(),
+  );
+  const [unbinding, setUnbinding] = React.useState<string | null>(null);
+
+  const [inviteOpen, setInviteOpen] = React.useState(false);
+  const [invite, setInvite] = React.useState({
+    name: "",
+    email: "",
+    phone: "",
+    role: "ZONE_OFFICER" as Role,
+    password: "",
+  });
+  const canInvite =
+    invite.name.trim().length >= 2 &&
+    /.+@.+\..+/.test(invite.email.trim()) &&
+    invite.password.length >= 10;
+
+  const [ownPassword, setOwnPassword] = React.useState({ current: "", next: "", confirm: "" });
+  const [changingPassword, setChangingPassword] = React.useState(false);
+
+  /**
+   * Changes the signed-in account's own password.
+   *
+   * The API signs out every *other* session on success and leaves this one
+   * alone, which is why nothing here redirects: the operator stays where they
+   * are, and the phone they left signed in at the depot does not.
+   */
+  const changeOwnPassword = async () => {
+    if (!isLiveApi) {
+      toast.info("Changing your password needs the API", {
+        description: "Set NEXT_PUBLIC_API_URL to sign in against a real account.",
+      });
+      return;
+    }
+    setChangingPassword(true);
+    try {
+      await authApi.changePassword(ownPassword.current, ownPassword.next, ownPassword.confirm);
+      setOwnPassword({ current: "", next: "", confirm: "" });
+      toast.success("Password changed", { description: "Your other sessions have been signed out." });
+    } catch (error) {
+      toast.error(
+        error instanceof ApiError ? error.message : "That password could not be changed.",
+      );
+    } finally {
+      setChangingPassword(false);
+    }
+  };
 
   const [savingRole, setSavingRole] = React.useState<string | null>(null);
   const [newRoleOpen, setNewRoleOpen] = React.useState(false);
@@ -254,11 +330,26 @@ export function SettingsView() {
         title="Settings"
         description="Platform configuration, integrations, roles and data governance."
         actions={
-          <Button size="sm" className="h-9" onClick={() => void save()} disabled={!dirty || saving}>
-            <Save className="size-4" /> {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
-          </Button>
+          <Can permission="config.write">
+            <Button size="sm" className="h-9" onClick={() => void save()} disabled={!dirty || saving}>
+              <Save className="size-4" /> {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
+            </Button>
+          </Can>
         }
       />
+
+      {/*
+        The configuration fields stay legible to everyone — knowing the GST rate
+        is part of understanding the platform — but an account without
+        `config.write` has no Save button, so it says why rather than letting
+        someone type into a form with no way out of it.
+      */}
+      {!canWriteConfig && ["general", "taxes", "notifications"].includes(tab) && (
+        <p className="rounded-lg border border-dashed bg-muted/25 p-3 text-xs text-muted-foreground text-pretty">
+          These settings are read-only for your role. Changing them needs the{" "}
+          <span className="font-mono">config.write</span> permission.
+        </p>
+      )}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="w-full justify-start overflow-x-auto">
@@ -561,17 +652,23 @@ export function SettingsView() {
                   </Field>
                 ))}
               </dl>
+              {/*
+                Both wait on the API. Nothing here can reach Razorpay or MSG91
+                directly — the credentials live server-side, which is the point
+                of them — so a real test needs a `/integrations/:name/test`
+                route that pings the provider and reports what came back, and a
+                rotation needs one that swaps the stored secret and re-registers
+                the webhook. "Responded in 214 ms" was a number this page had no
+                way of knowing, on a request it never made.
+              */}
               {integration.status === "Connected" && (
                 <div className="mt-3 flex gap-2">
                   <Button
                     variant="outline"
                     size="sm"
                     className="h-8"
-                    onClick={() =>
-                      toast.success("Connection tested", {
-                        description: `${integration.name} responded in 214 ms.`,
-                      })
-                    }
+                    disabled
+                    title="Needs an API route that pings the provider"
                   >
                     Test connection
                   </Button>
@@ -579,7 +676,8 @@ export function SettingsView() {
                     variant="outline"
                     size="sm"
                     className="h-8"
-                    onClick={() => toast.info("Rotate credentials", { description: integration.name })}
+                    disabled
+                    title="Needs an API route that rotates the stored secret"
                   >
                     Rotate keys
                   </Button>
@@ -660,6 +758,13 @@ export function SettingsView() {
             description="Enforced in middleware and re-asserted in every scoped service method"
           >
             <div className="space-y-5">
+              {/*
+                The groups come from `GET /rbac/matrix`, which serves them from
+                the same file the guards read their grants out of. The portal
+                keeps its own copy only as the demo-mode fallback — see the note
+                on PERMISSION_GROUPS in shared/constants/roles.ts — so a label
+                cannot drift away from the thing it describes.
+              */}
               {permissionGroups.map((group) => (
                 <div key={group.key} className="space-y-2">
                   <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
@@ -699,7 +804,10 @@ export function SettingsView() {
                                   // The superuser is unrestricted by definition;
                                   // its boxes are shown ticked and locked rather
                                   // than implying a list that means nothing.
-                                  disabled={!role.editable}
+                                  // `user.manage` is what PATCH /rbac/roles/:code
+                                  // needs, so an account without it reads the
+                                  // matrix rather than editing it.
+                                  disabled={!role.editable || !canManageUsers}
                                   onCheckedChange={() => togglePermission(role.code, permission.key)}
                                   aria-label={`${permission.label} for ${role.label}`}
                                 />
@@ -712,6 +820,21 @@ export function SettingsView() {
                   </div>
                 </div>
               ))}
+
+              {/*
+                A permission the guards enforce but no group mentions would
+                otherwise be invisible here — granted by nobody, revocable by
+                nobody, and still checked on every request. The API surfaces
+                them rather than hiding them, so this screen does too.
+              */}
+              {(matrix.data?.ungrouped ?? []).length > 0 && (
+                <p className="rounded-lg border border-dashed border-amber-500/40 bg-amber-500/[0.06] p-3 text-xs text-muted-foreground text-pretty">
+                  The API enforces{" "}
+                  <span className="font-mono">{(matrix.data?.ungrouped ?? []).join(", ")}</span>, which
+                  belongs to no group and so cannot be granted from this matrix. Add it to a group in
+                  the API&apos;s permission catalogue.
+                </p>
+              )}
             </div>
             <div className="mt-4 space-y-3">
               <div className="flex flex-wrap items-center gap-2">
@@ -745,14 +868,16 @@ export function SettingsView() {
             description="System roles cannot be removed — the platform refers to them by name"
             contentClassName="p-0"
             action={
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => setNewRoleOpen(true)}
-              >
-                <Plus className="size-3.5" /> New role
-              </Button>
+              <Can permission="user.manage">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setNewRoleOpen(true)}
+                >
+                  <Plus className="size-3.5" /> New role
+                </Button>
+              </Can>
             }
           >
             <ul className="divide-y divide-border/60">
@@ -777,6 +902,8 @@ export function SettingsView() {
                       variant="ghost"
                       size="sm"
                       className="h-7 text-xs text-destructive"
+                      disabled={!canManageUsers}
+                      title={canManageUsers ? undefined : NOT_PERMITTED}
                       onClick={() => {
                         setRoleToDelete(role.code);
                         setDeleteRoleOpen(true);
@@ -809,14 +936,24 @@ export function SettingsView() {
             description="Municipal staff with access to this portal"
             contentClassName="p-0"
             action={
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => toast.info("Invite a user", { description: "They receive an email to set a password and enrol 2FA." })}
-              >
-                Invite user
-              </Button>
+              /*
+                Called "Add" rather than "Invite": `POST /users` creates the
+                account outright with a password the administrator chooses.
+                There is no invitation route, no token, and nothing that emails
+                anybody — the old label promised a mail the platform cannot
+                send, so the password has to be handed over in person or on a
+                call, exactly as the reset-password flow already works.
+              */
+              <Can permission="user.manage">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setInviteOpen(true)}
+                >
+                  <Plus className="size-3.5" /> Add user
+                </Button>
+              </Can>
             }
           >
             <ul className="divide-y divide-border/60">
@@ -844,8 +981,13 @@ export function SettingsView() {
                     label={user.name}
                     actions={[
                       {
+                        // Everything on this menu is `user.manage`, which is
+                        // what `users.controller.ts` requires on all seven of
+                        // its routes. A submenu carries the permission on the
+                        // parent so the whole branch disables as one.
                         label: "Change role",
                         icon: ShieldCheck,
+                        permission: "user.manage",
                         children: (Object.values(ROLES) as Role[])
                           .filter((r) => r !== "CITIZEN" && r !== "VENDOR" && r !== "ATTENDANT")
                           .map((r) => ({
@@ -864,6 +1006,7 @@ export function SettingsView() {
                       {
                         label: "Reset password",
                         icon: KeyRound,
+                        permission: "user.manage",
                         onSelect: () => {
                           setPasswordTarget(user);
                           setPasswordOpen(true);
@@ -872,6 +1015,7 @@ export function SettingsView() {
                       {
                         label: user.status === "SUSPENDED" ? "Reinstate" : "Suspend access",
                         icon: Trash2,
+                        permission: "user.manage",
                         destructive: user.status !== "SUSPENDED",
                         separatorBefore: true,
                         onSelect: () => {
@@ -946,23 +1090,50 @@ export function SettingsView() {
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-1.5">
                 <Label htmlFor="pwd-current">Current password</Label>
-                <Input id="pwd-current" type="password" autoComplete="current-password" />
+                <Input
+                  id="pwd-current"
+                  type="password"
+                  autoComplete="current-password"
+                  value={ownPassword.current}
+                  onChange={(e) => setOwnPassword({ ...ownPassword, current: e.target.value })}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="pwd-new">New password</Label>
-                <Input id="pwd-new" type="password" autoComplete="new-password" />
+                <Input
+                  id="pwd-new"
+                  type="password"
+                  autoComplete="new-password"
+                  value={ownPassword.next}
+                  onChange={(e) => setOwnPassword({ ...ownPassword, next: e.target.value })}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="pwd-confirm">Confirm new password</Label>
-                <Input id="pwd-confirm" type="password" autoComplete="new-password" />
+                <Input
+                  id="pwd-confirm"
+                  type="password"
+                  autoComplete="new-password"
+                  value={ownPassword.confirm}
+                  onChange={(e) => setOwnPassword({ ...ownPassword, confirm: e.target.value })}
+                />
               </div>
             </div>
+            <p className="mt-3 text-xs text-muted-foreground text-pretty">
+              At least 10 characters. Changing it signs out every other session you have open.
+            </p>
             <Button
               size="sm"
               className="mt-4"
-              onClick={() => toast.success("Password changed", { description: "Other sessions have been signed out." })}
+              disabled={
+                changingPassword ||
+                ownPassword.current.length === 0 ||
+                ownPassword.next.length < 10 ||
+                ownPassword.next !== ownPassword.confirm
+              }
+              onClick={() => void changeOwnPassword()}
             >
-              Change password
+              {changingPassword ? "Changing…" : "Change password"}
             </Button>
           </SectionCard>
 
@@ -981,11 +1152,23 @@ export function SettingsView() {
               codes somewhere safe — without them and without your device, only a Super Admin can
               restore access.
             </p>
+            {/*
+              Re-enrolment waits on a QR-and-verify flow, not on an endpoint:
+              `POST /auth/two-factor/setup` returns the otpauth URL and
+              `/confirm` takes the first generated code, but nothing here draws
+              the QR or collects that code, and enrolling without confirming
+              would lock the account out of its own authenticator.
+
+              Recovery codes wait on the API. There is no route that issues or
+              redeems them — an account that loses its authenticator is restored
+              by a Super Admin through `POST /auth/two-factor/disable/:userId`,
+              which is the recovery path that actually exists today.
+            */}
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" onClick={() => toast.info("Re-enrolment started", { description: "Scan the new QR code in your authenticator app." })}>
+              <Button variant="outline" size="sm" disabled title="Needs the QR enrolment flow">
                 Re-enrol device
               </Button>
-              <Button variant="outline" size="sm" onClick={() => toast.success("Recovery codes generated", { description: "10 single-use codes. Store them offline." })}>
+              <Button variant="outline" size="sm" disabled title="Recovery codes are not built yet">
                 Generate recovery codes
               </Button>
             </div>
@@ -996,21 +1179,32 @@ export function SettingsView() {
             contentClassName="p-0"
             action={
               <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setRevokeOpen(true)}>
-                Revoke all
+                Sign out everywhere
               </Button>
             }
-            description="Every device signed in to your account. The full estate is on the audit page."
+            description="Every device bound to your account. The full estate is on the audit page."
           >
             <ul className="divide-y divide-border/60">
-              {[
-                {
-                  id: "this",
-                  name: "This device",
-                  detail: "The browser you are reading this in",
-                  current: true,
-                  at: me?.lastLoginAt ?? me?.createdAt ?? "",
-                },
-              ].map((device) => (
+              {(isLiveApi
+                ? (devices.data ?? []).map((device) => ({
+                    id: device.id,
+                    name: device.platform === "web" ? "Browser" : device.platform,
+                    detail: device.appVersion
+                      ? `${device.fingerprint.slice(0, 18)}… · ${device.appVersion}`
+                      : `${device.fingerprint.slice(0, 18)}…`,
+                    current: device.fingerprint === thisFingerprint,
+                    at: device.lastSeenAt ?? device.createdAt,
+                  }))
+                : [
+                    {
+                      id: "this",
+                      name: "This device",
+                      detail: "The browser you are reading this in",
+                      current: true,
+                      at: me?.lastLoginAt ?? me?.createdAt ?? "",
+                    },
+                  ]
+              ).map((device) => (
                 <li key={device.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                   <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted">
                     <Laptop className="size-4 text-muted-foreground" />
@@ -1024,7 +1218,9 @@ export function SettingsView() {
                         </Badge>
                       )}
                     </p>
-                    <p className="truncate text-xs text-muted-foreground">{device.detail}</p>
+                    <p className="truncate font-mono text-xs text-muted-foreground">
+                      {device.detail}
+                    </p>
                   </div>
                   <span className="text-xs text-muted-foreground">
                     {device.at ? relativeTime(device.at) : "—"}
@@ -1034,13 +1230,37 @@ export function SettingsView() {
                       variant="ghost"
                       size="sm"
                       className="h-7 text-xs text-destructive hover:text-destructive"
-                      onClick={() => toast.success("Device signed out")}
+                      disabled={unbinding === device.id}
+                      onClick={() => {
+                        setUnbinding(device.id);
+                        void authApi
+                          .unbindDevice(device.id)
+                          .then(async () => {
+                            await devices.refetch();
+                            toast.success("Device signed out", {
+                              description: "It has to sign in again to be bound to this account.",
+                            });
+                          })
+                          .catch((error: unknown) =>
+                            toast.error(
+                              error instanceof ApiError
+                                ? error.message
+                                : "That device could not be signed out.",
+                            ),
+                          )
+                          .finally(() => setUnbinding(null));
+                      }}
                     >
-                      Revoke
+                      {unbinding === device.id ? "Signing out…" : "Revoke"}
                     </Button>
                   )}
                 </li>
               ))}
+              {isLiveApi && !devices.isLoading && (devices.data ?? []).length === 0 && (
+                <li className="px-4 py-6 text-center text-xs text-muted-foreground">
+                  No devices are bound to this account yet.
+                </li>
+              )}
             </ul>
           </SectionCard>
         </TabsContent>
@@ -1054,80 +1274,187 @@ export function SettingsView() {
               <Field label="Restore drill">Passed · last quarter</Field>
               <Field label="Evidence bucket">Versioned, object-lock enabled</Field>
             </dl>
+            {/*
+              Backups are Neon's, not the platform's. Point-in-time recovery
+              and the nightly dump run at the database provider, and neither the
+              API nor this portal has a route that starts one or exercises a
+              restore — doing that from here would mean the application holding
+              credentials to its own infrastructure, which is a worse trade than
+              two disabled buttons. The figures above are the retention policy,
+              which is real; the controls were not.
+            */}
             <div className="mt-4 flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => toast.success("Backup started", { description: "You will be notified when it completes." })}
-              >
+              <Button variant="outline" size="sm" disabled title="Backups run at the database provider">
                 <CloudUpload className="size-4" /> Run backup now
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => toast.info("Restore drill", { description: "This restores into a scratch database, never production." })}
-              >
+              <Button variant="outline" size="sm" disabled title="Restore drills run at the database provider">
                 Run restore drill
               </Button>
             </div>
           </SectionCard>
 
-          <SectionCard
-            title="Data governance"
-            description="Retention and citizen rights under the DPDP Act"
-          >
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="retain-evidence">Evidence image retention (days)</Label>
-                <Input id="retain-evidence" type="number" defaultValue={180} onChange={() => setDirty(true)} />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="retain-audit">Audit trail retention (years)</Label>
-                <Input id="retain-audit" type="number" defaultValue={7} onChange={() => setDirty(true)} />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="retain-gps">GPS trail retention (days)</Label>
-                <Input id="retain-gps" type="number" defaultValue={90} onChange={() => setDirty(true)} />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="retain-inactive">Inactive citizen purge (months)</Label>
-                <Input id="retain-inactive" type="number" defaultValue={36} onChange={() => setDirty(true)} />
-              </div>
-            </div>
-            <Separator className="my-4" />
-            <div className="space-y-3">
-              {[
-                { id: "dpdp-consent", label: "Capture consent at citizen registration", checked: true },
-                { id: "dpdp-export", label: "Allow citizens to export their own data", checked: true },
-                { id: "dpdp-erase", label: "Allow citizens to request erasure", checked: true },
-                { id: "dpdp-mask", label: "Mask citizen phone numbers in the vendor app", checked: true },
-              ].map((row) => (
-                <div key={row.id} className="flex items-center justify-between gap-3">
-                  <Label htmlFor={row.id} className="text-sm font-normal">
-                    {row.label}
-                  </Label>
-                  <Switch id={row.id} defaultChecked={row.checked} onCheckedChange={() => setDirty(true)} />
-                </div>
-              ))}
-            </div>
-          </SectionCard>
+          {/*
+            A "Data governance" card stood here with four `defaultValue` inputs
+            and four switches: evidence kept for 180 days, consent captured at
+            registration, citizens able to request erasure. None of it was wired
+            to anything, and the numbers were not even the platform's — the
+            published privacy notice promises evidence is destroyed after
+            *ninety* days, not a hundred and eighty.
 
-          <SectionCard title="Danger zone" className="border-destructive/40">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="space-y-0.5">
-                <p className="text-sm font-medium">Purge demonstration data</p>
-                <p className="text-xs text-muted-foreground text-pretty">
-                  Removes every seeded zone, vendor, session and payment. Use this once before
-                  handing the platform to the authority — never afterwards.
-                </p>
-              </div>
-              <Button variant="destructive" size="sm" onClick={() => setWipeOpen(true)}>
-                <Trash2 className="size-4" /> Purge demo data
-              </Button>
-            </div>
-          </SectionCard>
+            That is worse than an empty panel. An officer reading it would have
+            told the authority the platform enforced a schedule nothing
+            enforced, and the authority would have repeated it to a citizen.
+
+            RetentionPanel reads `GET /privacy/retention`, which resolves every
+            period exactly as the purge resolves it — so what is on the screen
+            is what the sweep will actually do tonight. It lives in its own file
+            because other people are working in this one.
+          */}
+          <RetentionPanel />
+
+          {/*
+            A "Danger zone" card stood here offering to purge demonstration
+            data. It asked the operator to type PURGE DEMO DATA, asked why they
+            were doing it, warned them to take a backup first — and then called
+            nothing at all. There is no purge endpoint on the API, and no plan
+            for one; seeded data is removed by re-running the seed against an
+            empty database, which is a deployment task and not a button.
+
+            It was deleted rather than disabled. A control that claims to
+            destroy every record and quietly does nothing is the worst kind:
+            the operator who pressed it walks away believing the platform was
+            handed over clean, and nobody discovers otherwise until a citizen's
+            first real receipt lands next to a fabricated one.
+          */}
         </TabsContent>
       </Tabs>
+
+      {/* --------------------------------------------------------- add user */}
+      <ConfirmDialog
+        open={inviteOpen}
+        onOpenChange={(open) => {
+          setInviteOpen(open);
+          if (!open) {
+            setInvite({ name: "", email: "", phone: "", role: "ZONE_OFFICER", password: "" });
+          }
+        }}
+        title="Add a portal user"
+        confirmLabel="Create account"
+        description={
+          <div className="space-y-3">
+            <p>
+              The account is usable immediately. There is no invitation email — read the password
+              to them and have them change it from their own settings once they are in.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="invite-name">Full name</Label>
+                <Input
+                  id="invite-name"
+                  value={invite.name}
+                  onChange={(e) => setInvite((u) => ({ ...u, name: e.target.value }))}
+                  placeholder="Ananya Bose"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="invite-role">Role</Label>
+                <Select
+                  value={invite.role}
+                  onValueChange={(v) => setInvite((u) => ({ ...u, role: v as Role }))}
+                >
+                  <SelectTrigger id="invite-role">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {/* Vendor, attendant and citizen accounts are created from
+                        their own screens, alongside the records that hang off
+                        the login — the API refuses them here. */}
+                    {(Object.values(ROLES) as Role[])
+                      .filter((r) => r !== "CITIZEN" && r !== "VENDOR" && r !== "ATTENDANT")
+                      .map((r) => (
+                        <SelectItem key={r} value={r}>
+                          {ROLE_LABELS[r]}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="invite-email">Work email</Label>
+                <Input
+                  id="invite-email"
+                  type="email"
+                  autoComplete="off"
+                  value={invite.email}
+                  onChange={(e) => setInvite((u) => ({ ...u, email: e.target.value }))}
+                  placeholder="a.bose@kmc.gov.in"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="invite-phone">Mobile (optional)</Label>
+                <Input
+                  id="invite-phone"
+                  value={invite.phone}
+                  onChange={(e) => setInvite((u) => ({ ...u, phone: e.target.value }))}
+                  placeholder="+919830000000"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="invite-password">Temporary password</Label>
+              <Input
+                id="invite-password"
+                type="text"
+                autoComplete="new-password"
+                value={invite.password}
+                onChange={(e) => setInvite((u) => ({ ...u, password: e.target.value }))}
+                placeholder="At least 10 characters"
+                className="font-mono"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground text-pretty">
+              A zone officer sees nothing until zones are assigned to them, which is done from
+              their account after it exists.
+            </p>
+          </div>
+        }
+        onConfirm={async () => {
+          if (!canInvite) {
+            toast.error("A name, a valid email and a 10-character password are needed");
+            throw new Error("incomplete");
+          }
+          await applyUser(
+            () =>
+              usersApi.create({
+                name: invite.name.trim(),
+                email: invite.email.trim(),
+                phone: invite.phone.trim() || undefined,
+                role: invite.role,
+                password: invite.password,
+              }),
+            (list) => [
+              ...list,
+              {
+                id: `usr_new_${list.length}`,
+                name: invite.name.trim(),
+                email: invite.email.trim(),
+                phone: invite.phone.trim(),
+                role: invite.role,
+                status: "ACTIVE" as const,
+                twoFactorEnabled: false,
+                createdAt: new Date().toISOString(),
+              },
+            ],
+            {
+              success: "Account created",
+              description: `${invite.name.trim()} can sign in now. Give them the password yourself.`,
+            },
+          );
+          setInvite({ name: "", email: "", phone: "", role: "ZONE_OFFICER", password: "" });
+        }}
+      />
 
       <ConfirmDialog
         open={newRoleOpen}
@@ -1283,37 +1610,37 @@ export function SettingsView() {
       <ConfirmDialog
         open={revokeOpen}
         onOpenChange={setRevokeOpen}
-        title="Sign out every other device?"
-        confirmLabel="Revoke all sessions"
-        description="Every session except this one ends immediately. You will not be signed out here."
-        onConfirm={() => toast.success("All other sessions revoked")}
+        title="Sign out of every device?"
+        confirmLabel="Sign out everywhere"
+        /*
+          The old copy promised "every session except this one". `POST
+          /auth/logout-all` revokes the whole refresh-token family — the API has
+          no notion of sparing the caller, and pretending otherwise would leave
+          an operator wondering why the portal threw them out. So it says what
+          happens, and then does it: revoke, then end this session properly
+          rather than leaving a page holding tokens the server has torn up.
+        */
+        description="Every session ends immediately, including this one. You will be asked to sign in again."
+        onConfirm={async () => {
+          if (!isLiveApi) {
+            toast.info("Signing out everywhere needs the API");
+            return;
+          }
+          try {
+            const { data } = await authApi.logoutAll();
+            toast.success("Signed out everywhere", {
+              description: `${data.revokedSessions} session(s) ended.`,
+            });
+          } catch (error) {
+            toast.error(
+              error instanceof ApiError ? error.message : "Those sessions could not be ended.",
+            );
+            return;
+          }
+          await signOut();
+        }}
       />
 
-      <ConfirmDialog
-        open={wipeOpen}
-        onOpenChange={setWipeOpen}
-        title="Purge all demonstration data?"
-        destructive
-        confirmLabel="Purge everything"
-        typeToConfirm="PURGE DEMO DATA"
-        reason={{ label: "Why are you purging?", placeholder: "Handing over to the authority ahead of go-live", required: true }}
-        description={
-          <div className="space-y-2">
-            <p>
-              Every seeded zone, vendor, attendant, session, payment and settlement is deleted. Real
-              data created after go-live is never touched by this action, but there is no undo.
-            </p>
-            <p className="font-medium text-destructive">
-              Take a backup first. This is the one button on this platform that destroys records.
-            </p>
-          </div>
-        }
-        onConfirm={() =>
-          toast.success("Demonstration data purged", {
-            description: "The platform is now empty and ready for real configuration.",
-          })
-        }
-      />
     </div>
   );
 }

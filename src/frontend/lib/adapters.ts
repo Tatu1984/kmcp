@@ -6,7 +6,7 @@ import type { ApiIncident } from "@/frontend/api/endpoints/incidents.api";
 import type { ApiPass, ApiPassPlan } from "@/frontend/api/endpoints/passes.api";
 import type { ApiCitizen } from "@/frontend/api/endpoints/citizens.api";
 import type { ApiSettlement, ApiSettlementDetail } from "@/frontend/api/endpoints/settlements.api";
-import type { ApiReportJob } from "@/frontend/api/endpoints/reports.api";
+import type { ApiReportJob, ApiReportSchedule } from "@/frontend/api/endpoints/reports.api";
 import type { ApiTariff } from "@/frontend/api/endpoints/tariffs.api";
 import type {
   ApiSlot,
@@ -32,6 +32,8 @@ import type {
   PassPlan,
   Payment,
   ReportJob,
+  ReportSchedule,
+  ReportStatus,
   Settlement,
   Shift,
   Tariff,
@@ -243,10 +245,12 @@ export function toSession(session: ApiSession): ParkingSession {
     taxAmount: session.taxAmount,
     penaltyAmount: session.penaltyAmount,
     payableAmount: session.payableAmount ?? undefined,
-    // Payment state belongs to the payments module, which does not exist yet.
-    // Reporting "unpaid" would be an assertion; this is simply not yet known.
-    paymentMode: undefined,
-    paid: false,
+    // The list now carries whichever payment was captured, so this is read
+    // rather than assumed. It used to be hardcoded `false` under a comment
+    // saying the state was unknown — which is not what `false` says to a
+    // screen, and every completed session rendered as unpaid because of it.
+    paymentMode: session.payments?.[0]?.mode,
+    paid: (session.payments?.length ?? 0) > 0,
     evidenceStart: session.evidenceStartMediaId ?? undefined,
     evidenceEnd: session.evidenceEndMediaId ?? undefined,
     isOverstay: session.isOverstay ?? false,
@@ -302,6 +306,44 @@ export function toReportJob(job: ApiReportJob): ReportJob {
   };
 }
 
+export function toReportSchedule(schedule: ApiReportSchedule): ReportSchedule {
+  return {
+    id: schedule.id,
+    name: schedule.name,
+    type: schedule.type,
+    label: schedule.label,
+    frequency: schedule.frequency,
+    hour: schedule.hour,
+    minute: schedule.minute,
+    weekday: schedule.weekday,
+    dayOfMonth: schedule.dayOfMonth,
+    timezone: schedule.timezone,
+    // Worded by the API rather than rebuilt here. The portal would otherwise be
+    // a second place that decides what "every Monday at eight" means, and the
+    // two would eventually disagree about a schedule nobody had touched.
+    cadence: schedule.cadence,
+    zoneId: schedule.zoneId,
+    vendorId: schedule.vendorId,
+    paramsLabel: schedule.paramsLabel,
+    channels: schedule.channels,
+    ownerName: schedule.ownerName,
+    isActive: schedule.isActive,
+    nextRunAt: schedule.nextRunAt,
+    lastRunAt: schedule.lastRunAt ?? undefined,
+    // The column holds a ReportStatus written by the runner; anything else came
+    // from a version of the API this build does not know about, and is dropped
+    // rather than rendered as an unrecognised badge.
+    lastStatus: isReportStatus(schedule.lastStatus) ? schedule.lastStatus : undefined,
+    lastError: schedule.lastError ?? undefined,
+    failureCount: schedule.failureCount,
+    failuresBeforePause: schedule.failuresBeforePause,
+  };
+}
+
+function isReportStatus(value: string | null | undefined): value is ReportStatus {
+  return value === "QUEUED" || value === "RUNNING" || value === "COMPLETED" || value === "FAILED";
+}
+
 export function toSettlement(settlement: ApiSettlement | ApiSettlementDetail): Settlement {
   const lines = "lines" in settlement ? settlement.lines : [];
   return {
@@ -347,9 +389,10 @@ export function toCitizen(citizen: ApiCitizen): Citizen {
     status: citizen.status,
     hasActivePass: citizen.hasActivePass,
     joinedAt: citizen.joinedAt,
-    // Never signed in yet. Falling back to the join date would read as activity
-    // that never happened, so the screen gets the join date's absence instead.
-    lastSeenAt: citizen.lastSeenAt ?? citizen.joinedAt,
+    // Never signed in yet stays absent. The fallback to the join date that used
+    // to be here read as activity that never happened — which is exactly what
+    // the comment above it said to avoid.
+    lastSeenAt: citizen.lastSeenAt ?? undefined,
   };
 }
 

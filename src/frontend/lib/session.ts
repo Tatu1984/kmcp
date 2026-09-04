@@ -2,7 +2,7 @@
 
 import { setTokens } from "@/frontend/api";
 import type { Principal } from "@/frontend/api";
-import type { Role } from "@/shared/constants/roles";
+import type { PermissionKey, Role } from "@/shared/constants/roles";
 
 /**
  * The portal's client-side session.
@@ -26,6 +26,19 @@ export interface SessionUser {
   twoFactorEnabled: boolean;
   lastLoginAt?: string;
   createdAt: string;
+  /**
+   * What this account may do, as resolved by the API.
+   *
+   * Undefined means "not known yet" and is deliberately distinct from an empty
+   * array, which means "known, and this account may do nothing". The portal
+   * must not gate on the difference being invisible: a screen that treated the
+   * two alike would flash every control on, then hide them.
+   */
+  permissions?: PermissionKey[];
+  /** True when the account may only operate inside `zoneIds`. */
+  isZoneScoped?: boolean;
+  /** Zones this account is restricted to. Empty means unrestricted. */
+  zoneIds?: string[];
 }
 
 function writeCookie(value: string, remember: boolean): void {
@@ -68,7 +81,14 @@ export function storedPrincipal(): SessionUser | null {
 
 /** Widens an API principal into the shape the chrome renders. */
 export function toSessionUser(
-  principal: Principal & { twoFactorEnabled?: boolean; lastLoginAt?: string; createdAt?: string },
+  principal: Principal & {
+    twoFactorEnabled?: boolean;
+    lastLoginAt?: string;
+    createdAt?: string;
+    permissions?: PermissionKey[];
+    isZoneScoped?: boolean;
+    zoneIds?: string[];
+  },
 ): SessionUser {
   return {
     id: principal.id,
@@ -79,5 +99,10 @@ export function toSessionUser(
     twoFactorEnabled: principal.twoFactorEnabled ?? false,
     lastLoginAt: principal.lastLoginAt,
     createdAt: principal.createdAt ?? new Date().toISOString(),
+    // The login response carries no permissions — only /auth/me resolves them —
+    // so these stay undefined until the principal has been fetched.
+    permissions: principal.permissions,
+    isZoneScoped: principal.isZoneScoped,
+    zoneIds: principal.zoneIds,
   };
 }

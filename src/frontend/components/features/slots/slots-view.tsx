@@ -22,6 +22,7 @@ import { Button } from "@/frontend/components/ui/button";
 import { Badge } from "@/frontend/components/ui/badge";
 import { Input } from "@/frontend/components/ui/input";
 import { Label } from "@/frontend/components/ui/label";
+import { Switch } from "@/frontend/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/frontend/components/ui/tabs";
 import {
   Dialog,
@@ -44,12 +45,16 @@ import { DataTable } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
+import { Can, NOT_PERMITTED } from "@/frontend/components/shared/can";
+import { ZoneScopeBadge } from "@/frontend/components/shared/zone-scope";
+import { usePermissions } from "@/frontend/hooks/use-permissions";
 import { Plate, SectionCard } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SLOTS, ZONES } from "@/frontend/lib/mock";
 import { slotsApi, zonesApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
 import { toSlot } from "@/frontend/lib/adapters";
+import { downloadCsv } from "@/frontend/lib/csv";
 import { ROUTES } from "@/shared/constants/routes";
 import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
 import { cn } from "@/lib/utils";
@@ -84,11 +89,24 @@ export function SlotsView() {
     () => listAll((page, pageSize) => slotsApi.list({ page, pageSize })).then((r) => r.map(toSlot)),
     SLOTS,
   );
+  const { can, isZoneScoped } = usePermissions();
+  // Every write on this screen — create, bulk create, patch, status, delete —
+  // is guarded on `slot.write` (slots.controller.ts:49, :61, :76, :89, :105).
+  // Only the two reads sit on `zone.read`.
+  const canWrite = can("slot.write");
+
   const [zoneId, setZoneId] = React.useState(zoneParam ?? "__all");
   const [bulkOpen, setBulkOpen] = React.useState(false);
   const [removeOpen, setRemoveOpen] = React.useState(false);
+  const [editOpen, setEditOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<Slot | null>(null);
   const [bulk, setBulk] = React.useState({ zoneId: "", type: "CAR" as SlotType, prefix: "C", count: 20 });
+  const [edit, setEdit] = React.useState({
+    type: "CAR" as SlotType,
+    isReserved: false,
+    status: "AVAILABLE" as SlotStatus,
+    reason: "",
+  });
 
   const data = React.useMemo(
     () => (zoneId === "__all" ? slots : slots.filter((s) => s.zoneId === zoneId)),
@@ -113,6 +131,12 @@ export function SlotsView() {
     },
     [apply],
   );
+
+  const openEdit = React.useCallback((slot: Slot) => {
+    setSelected(slot);
+    setEdit({ type: slot.type, isReserved: slot.isReserved, status: slot.status, reason: "" });
+    setEditOpen(true);
+  }, []);
 
   const columns = React.useMemo<ColumnDef<Slot, unknown>[]>(
     () => [
@@ -180,11 +204,15 @@ export function SlotsView() {
                   {
                     label: "Edit bay",
                     icon: Pencil,
-                    onSelect: () => toast.info(`Editing bay ${slot.code}`, { description: slot.zoneName }),
+                    // PATCH /slots/:id — slots.controller.ts:76
+                    permission: "slot.write",
+                    onSelect: () => openEdit(slot),
                   },
                   {
                     label: "Set status",
                     icon: SquareStack,
+                    // POST /slots/:id/status — slots.controller.ts:89
+                    permission: "slot.write",
                     separatorBefore: true,
                     children: [
                       { label: "Available", icon: CircleCheck, onSelect: () => setStatus(slot, "AVAILABLE", "available") },
@@ -195,6 +223,8 @@ export function SlotsView() {
                   {
                     label: "Change type",
                     icon: Grid3x3,
+                    // PATCH /slots/:id — slots.controller.ts:76
+                    permission: "slot.write",
                     children: (["CAR", "TWO_WHEELER", "EV", "VIP", "ACCESSIBLE"] as SlotType[]).map((t) => ({
                       label: VEHICLE_TYPE_LABELS[t],
                       onSelect: () =>
@@ -208,12 +238,16 @@ export function SlotsView() {
                   {
                     label: "Block bay",
                     icon: ShieldBan,
+                    // POST /slots/:id/status — slots.controller.ts:89
+                    permission: "slot.write",
                     separatorBefore: true,
                     onSelect: () => setStatus(slot, "OUT_OF_SERVICE", "blocked"),
                   },
                   {
                     label: "Remove bay",
                     icon: Trash2,
+                    // DELETE /slots/:id — slots.controller.ts:105
+                    permission: "slot.write",
                     destructive: true,
                     onSelect: () => {
                       setSelected(slot);
@@ -227,7 +261,7 @@ export function SlotsView() {
         },
       },
     ],
-    [apply, setStatus],
+    [apply, setStatus, openEdit],
   );
 
   const counts = {
@@ -241,6 +275,7 @@ export function SlotsView() {
     <div className="space-y-6">
       <PageHeader
         title="Parking slots"
+        meta={<ZoneScopeBadge />}
         description="Individual bays within each zone — type, reservation and live status."
         actions={
           <>
@@ -249,17 +284,30 @@ export function SlotsView() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__all">All zones</SelectItem>
-                {ZONES.map((z) => (
+                <SelectItem value="__all">{isZoneScoped ? "All my zones" : "All zones"}</SelectItem>
+                {/* The same zone list the "Add bays" dialog picks from: live
+                    when there is a backend, the demo roster when there is not.
+                    Reading ZONES here offered zone ids the live slots below
+                    have never belonged to, so choosing one showed no bays.
+
+                    Nothing is filtered here for a zone-scoped officer either:
+                    GET /zones already answers with their allocation and nothing
+                    else, so a second filter over `zoneIds` would narrow a list
+                    that is already narrow and go stale the day the rule
+                    changes. */}
+                {zones.map((z) => (
                   <SelectItem key={z.id} value={z.id}>
                     {z.code} · {z.name}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            <Button size="sm" className="h-9" onClick={() => setBulkOpen(true)}>
-              <Plus className="size-4" /> Add bays
-            </Button>
+            {/* POST /slots/bulk — slots.controller.ts:61 */}
+            <Can permission="slot.write">
+              <Button size="sm" className="h-9" onClick={() => setBulkOpen(true)}>
+                <Plus className="size-4" /> Add bays
+              </Button>
+            </Can>
           </>
         }
       />
@@ -293,7 +341,11 @@ export function SlotsView() {
         <TabsContent value="grid" className="mt-4">
           <SectionCard
             title="Bay map"
-            description="Click a bay to change its status. Colour follows live occupancy."
+            description={
+              canWrite
+                ? "Click a bay to change its status. Colour follows live occupancy."
+                : "Colour follows live occupancy. Changing a bay's status is not yours to do."
+            }
           >
             <div className="grid grid-cols-4 gap-2 sm:grid-cols-8 lg:grid-cols-12">
               {data.slice(0, 120).map((slot) => {
@@ -309,6 +361,10 @@ export function SlotsView() {
                   <button
                     key={slot.id}
                     type="button"
+                    // Tapping a bay here writes a status, so it answers to the
+                    // same `slot.write` the ⋯ menu does. The tiles stay on
+                    // screen either way — the map is how this screen is read.
+                    disabled={!canWrite}
                     onClick={() =>
                       setStatus(
                         slot,
@@ -317,10 +373,15 @@ export function SlotsView() {
                       )
                     }
                     className={cn(
-                      "rounded-lg border p-2 text-center transition-all hover:scale-[1.04]",
+                      "rounded-lg border p-2 text-center transition-all",
+                      canWrite ? "hover:scale-[1.04]" : "cursor-not-allowed",
                       tone,
                     )}
-                    title={`${slot.zoneName} · ${VEHICLE_TYPE_LABELS[slot.type]} · ${slot.status}`}
+                    title={
+                      canWrite
+                        ? `${slot.zoneName} · ${VEHICLE_TYPE_LABELS[slot.type]} · ${slot.status}`
+                        : `${slot.zoneName} · ${VEHICLE_TYPE_LABELS[slot.type]} · ${slot.status} — ${NOT_PERMITTED}`
+                    }
                   >
                     <p className="font-mono text-[11px] font-semibold">{slot.code}</p>
                     <p className="mt-0.5 truncate text-[9px] opacity-70">
@@ -362,9 +423,12 @@ export function SlotsView() {
                 options: Object.entries(VEHICLE_TYPE_LABELS).map(([value, label]) => ({ value, label })),
               },
             ]}
-            onExport={(rows) => toast.success("Export queued", { description: `${rows.length} bays` })}
+            onExport={(rows, columns) => {
+              const file = downloadCsv("bays", rows, columns);
+              toast.success("Export ready", { description: `${rows.length} bays · ${file}` });
+            }}
             bulkActions={(rows, clear) => (
-              <>
+              <Can permission="slot.write">
                 <Button
                   size="sm"
                   variant="outline"
@@ -408,7 +472,7 @@ export function SlotsView() {
                 >
                   Return to service
                 </Button>
-              </>
+              </Can>
             )}
             isLoading={isLoading}
             emptyTitle={emptyReason ? "Nothing to show" : "No bays configured"}
@@ -531,6 +595,158 @@ export function SlotsView() {
               }}
             >
               Create bays
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* --------------------------------------------------------- edit bay */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit bay {selected?.code}</DialogTitle>
+            <DialogDescription>
+              {selected?.zoneName}. Type and reservation are one call, status is another — the
+              server keeps them apart because taking a bay out of service is a decision that has to
+              carry a reason.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-code">Bay code</Label>
+              <Input id="edit-code" value={selected?.code ?? ""} readOnly disabled className="font-mono" />
+              {/**
+               * `UpdateSlotSchema` takes `type` and `isReserved` and nothing
+               * else — a bay cannot be renamed. The code is painted on the kerb
+               * and printed on every session that ever used it, so a rename
+               * would silently rewrite history. Retire the bay and add the new
+               * one instead.
+               */}
+              <p className="text-xs text-muted-foreground">
+                Fixed once painted. Remove the bay and add it again to renumber.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-type">Bay type</Label>
+              <Select
+                value={edit.type}
+                onValueChange={(v) => setEdit((e) => ({ ...e, type: v as SlotType }))}
+              >
+                <SelectTrigger id="edit-type" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(VEHICLE_TYPE_LABELS).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-status">Status</Label>
+              <Select
+                value={edit.status}
+                onValueChange={(v) => setEdit((e) => ({ ...e, status: v as SlotStatus }))}
+              >
+                <SelectTrigger id="edit-status" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="AVAILABLE">Available</SelectItem>
+                  <SelectItem value="RESERVED">Reserved</SelectItem>
+                  <SelectItem value="OUT_OF_SERVICE">Out of service</SelectItem>
+                  {/* OCCUPIED is set by a session starting, never by hand — a
+                      bay this screen marks occupied has no vehicle in it. */}
+                  <SelectItem value="OCCUPIED" disabled>
+                    Occupied — set by a session
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-reserved">Held back</Label>
+              <div className="flex h-9 items-center gap-2 rounded-md border px-3">
+                <Switch
+                  id="edit-reserved"
+                  checked={edit.isReserved}
+                  onCheckedChange={(v) => setEdit((e) => ({ ...e, isReserved: v }))}
+                />
+                <span className="text-xs text-muted-foreground">
+                  {edit.isReserved ? "Reserved for permit holders" : "Open to any vehicle"}
+                </span>
+              </div>
+            </div>
+            {edit.status === "OUT_OF_SERVICE" && (
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="edit-reason">Why is it out of service?</Label>
+                <Input
+                  id="edit-reason"
+                  value={edit.reason}
+                  onChange={(e) => setEdit((s) => ({ ...s, reason: e.target.value }))}
+                  placeholder="Resurfacing / bollard damaged / scaffolding over the bay"
+                />
+                <p className="text-xs text-muted-foreground">
+                  The API insists on this, and it is right to — an unexplained blocked bay is lost
+                  revenue nobody can account for later.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!selected) return;
+                const typeChanged = edit.type !== selected.type;
+                const reservedChanged = edit.isReserved !== selected.isReserved;
+                const statusChanged = edit.status !== selected.status;
+                if (!typeChanged && !reservedChanged && !statusChanged) {
+                  setEditOpen(false);
+                  return;
+                }
+                if (edit.status === "OUT_OF_SERVICE" && edit.reason.trim().length < 4) {
+                  toast.error("Say why the bay is out of service");
+                  return;
+                }
+                void apply(
+                  async () => {
+                    // Two endpoints, in this order: the attributes first, so a
+                    // bay that ends up out of service does so as the last thing
+                    // written against it and the reason is the newest entry in
+                    // the audit trail.
+                    if (typeChanged || reservedChanged) {
+                      await slotsApi.update(selected.id, {
+                        ...(typeChanged ? { type: edit.type } : {}),
+                        ...(reservedChanged ? { isReserved: edit.isReserved } : {}),
+                      });
+                    }
+                    if (statusChanged) {
+                      await slotsApi.changeStatus(
+                        selected.id,
+                        edit.status,
+                        edit.status === "OUT_OF_SERVICE" ? edit.reason.trim() : undefined,
+                      );
+                    }
+                  },
+                  (list) =>
+                    list.map((s) =>
+                      s.id === selected.id
+                        ? { ...s, type: edit.type, isReserved: edit.isReserved, status: edit.status }
+                        : s,
+                    ),
+                  { success: `Bay ${selected.code} updated`, description: selected.zoneName },
+                )
+                  .then(() => setEditOpen(false))
+                  .catch(() => undefined);
+              }}
+            >
+              Save changes
             </Button>
           </DialogFooter>
         </DialogContent>

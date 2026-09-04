@@ -42,6 +42,7 @@ import {
   SplitMeter,
 } from "@/frontend/components/shared/bits";
 import { AvailabilityBadge, StatusBadge } from "@/frontend/components/shared/status-badge";
+import { CITYWIDE, ZoneScopeBadge } from "@/frontend/components/shared/zone-scope";
 import { FadeStagger, FadeStaggerItem, Ticker } from "@/frontend/components/reactbits";
 import { OccupancyChart, PaymentMixChart, RevenueChart } from "./charts";
 import { LiveActivityFeed } from "./live-feed";
@@ -55,6 +56,8 @@ import {
 } from "@/frontend/lib/mock";
 import { analyticsApi, revenueApi, zonesApi, listAll } from "@/frontend/api";
 import { useApiQuery } from "@/frontend/hooks/use-api";
+import { usePermissions } from "@/frontend/hooks/use-permissions";
+import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatMoney, percent } from "@/shared/utils/common.util";
 import { PAYMENT_MODE_LABELS } from "@/config/app.config";
@@ -70,6 +73,34 @@ const RANGES = [
 export function DashboardView() {
   const [range, setRange] = React.useState("today");
   const [refreshing, setRefreshing] = React.useState(false);
+  const { isZoneScoped } = usePermissions();
+
+  /**
+   * A stat hint, marked when the figure above it is not the officer's own.
+   *
+   * `GET /analytics/overview` is only half zone-scoped. Money, sessions,
+   * occupancy, capacity and the zone counts all run through a `zoneId in
+   * (...)` filter for a scoped account; incidents, shifts, attendants,
+   * vendors, settlements, citizens and passes are counted with no zone filter
+   * at all — `analytics.service.ts` queries them straight off their own tables.
+   *
+   * Some of that is unavoidable (a vendor or a citizen does not belong to one
+   * ward), and some of it is a real gap: `Incident` and `Shift` both carry a
+   * `zoneId` and both are scoped correctly by their own modules, so a Zone
+   * Officer's dashboard reports the city's open incidents beside their own
+   * ward's revenue. Rather than caption the whole page with one claim that
+   * would be false for half of it, the tiles that show an unscoped figure say
+   * so — and the ones that stay unmarked are genuinely the officer's.
+   */
+  const hint = (text: React.ReactNode, citywide = false): React.ReactNode =>
+    citywide && isZoneScoped ? (
+      <>
+        {text}
+        <span className="mt-0.5 block text-[11px] opacity-80">{CITYWIDE}</span>
+      </>
+    ) : (
+      text
+    );
 
   const rangeLabel = RANGES.find((r) => r.value === range)?.label ?? "Today";
 
@@ -158,7 +189,10 @@ export function DashboardView() {
     listAll((page, pageSize) => zonesApi.list({ page, pageSize })),
   );
   const zoneStatusCounts = React.useMemo(() => {
-    const source = allZones.data ?? ZONES;
+    // Never the demo roster on a live deployment. Falling back to ZONES here
+    // put the demo city's operating states under the badges of a real one for
+    // as long as the request was in flight, and kept them there if it failed.
+    const source = isLiveApi ? (allZones.data ?? []) : ZONES;
     const counts: Record<string, number> = {};
     for (const zone of source) counts[zone.status] = (counts[zone.status] ?? 0) + 1;
     return counts;
@@ -220,13 +254,16 @@ export function DashboardView() {
         title="Operations dashboard"
         description={`Live picture of the kerbside network — ${rangeLabel.toLowerCase()}.`}
         meta={
-          <Badge variant="outline" className="gap-1.5">
-            <span className="relative flex size-1.5">
-              <span className="absolute inline-flex size-full animate-pulse-ring rounded-full bg-emerald-500" />
-              <span className="relative inline-flex size-1.5 rounded-full bg-emerald-500" />
-            </span>
-            Live
-          </Badge>
+          <>
+            <Badge variant="outline" className="gap-1.5">
+              <span className="relative flex size-1.5">
+                <span className="absolute inline-flex size-full animate-pulse-ring rounded-full bg-emerald-500" />
+                <span className="relative inline-flex size-1.5 rounded-full bg-emerald-500" />
+              </span>
+              Live
+            </Badge>
+            <ZoneScopeBadge />
+          </>
         }
         actions={
           <>
@@ -276,6 +313,9 @@ export function DashboardView() {
               {DASHBOARD.varianceShifts} shift{DASHBOARD.varianceShifts === 1 ? "" : "s"} closed with
               a cash variance, and {DASHBOARD.pendingSettlements} settlement
               {DASHBOARD.pendingSettlements === 1 ? "" : "s"} are waiting on approval.
+              {/* Neither count is zone-filtered by the API, so a scoped officer
+                  is not being told these are all theirs to clear. */}
+              {isZoneScoped && " Both counts are authority-wide."}
             </span>
             <span className="flex gap-2">
               <Button variant="link" size="sm" className="h-auto p-0 text-amber-700 dark:text-amber-300" asChild>
@@ -297,10 +337,13 @@ export function DashboardView() {
             `${DASHBOARD.activeVehicles} vehicles parked right now`,
             `${DASHBOARD.availableSlots} bays free across ${DASHBOARD.zonesOpen} open zones`,
             `${formatMoney(DASHBOARD.revenueToday)} collected today`,
-            `${DASHBOARD.attendantsOnShift} attendants on shift`,
+            // Three of these read off unscoped counters — see `hint` above —
+            // so they name their scope rather than letting a ward officer read
+            // the authority's numbers as their own.
+            `${DASHBOARD.attendantsOnShift} attendants on shift${isZoneScoped ? " authority-wide" : ""}`,
             `${DASHBOARD.overstayCount} vehicles past expected duration`,
-            `${DASHBOARD.openIncidents} incidents open`,
-            `${formatMoney(DASHBOARD.pendingVendorPayments, { compact: true })} pending vendor payout`,
+            `${DASHBOARD.openIncidents} incidents open${isZoneScoped ? " authority-wide" : ""}`,
+            `${formatMoney(DASHBOARD.pendingVendorPayments, { compact: true })} pending vendor payout${isZoneScoped ? " authority-wide" : ""}`,
           ].map((text, i) => (
             <span key={i} className="text-xs text-muted-foreground">
               <span className="mr-2 inline-block size-1 rounded-full bg-primary align-middle" />
@@ -350,7 +393,7 @@ export function DashboardView() {
             value={formatMoney(DASHBOARD.pendingVendorPayments, { compact: true })}
             icon={Coins}
             accent="warning"
-            hint={`${DASHBOARD.pendingSettlements} settlements awaiting approval`}
+            hint={hint(`${DASHBOARD.pendingSettlements} settlements awaiting approval`, true)}
             href={ROUTES.settlements}
           />
         </FadeStaggerItem>
@@ -372,7 +415,7 @@ export function DashboardView() {
             numeric={DASHBOARD.attendantsOnShift}
             icon={Users}
             accent="info"
-            hint={`of ${DASHBOARD.totalAttendants} registered`}
+            hint={hint(`of ${DASHBOARD.totalAttendants} registered`, true)}
             href={ROUTES.attendants}
           />
         </FadeStaggerItem>
@@ -381,7 +424,7 @@ export function DashboardView() {
             label="Active vendors"
             numeric={DASHBOARD.activeVendors}
             icon={Building2}
-            hint={`${DASHBOARD.pendingVendorApprovals} application awaiting approval`}
+            hint={hint(`${DASHBOARD.pendingVendorApprovals} application awaiting approval`, true)}
             href={ROUTES.vendors}
           />
         </FadeStaggerItem>
@@ -391,7 +434,7 @@ export function DashboardView() {
             numeric={DASHBOARD.openIncidents}
             icon={ShieldAlert}
             accent={DASHBOARD.openIncidents > 10 ? "danger" : "warning"}
-            hint="Illegal parking, disputes and damage"
+            hint={hint("Illegal parking, disputes and damage", true)}
             href={ROUTES.incidents}
           />
         </FadeStaggerItem>
@@ -490,7 +533,14 @@ export function DashboardView() {
       {/* ---------------------------------------------------------- heatmap */}
       <SectionCard
         title="Parking heat map"
-        description="Tile size is capacity, colour is utilisation — the big red tiles are where to look first"
+        description={
+          // The tiles come from GET /zones, which the API scopes, so a ward
+          // officer's map already frames only their kerb — it just never said
+          // that was why the city's other zones were missing.
+          isZoneScoped
+            ? "Your zones — tile size is capacity, colour is utilisation, and the big red tiles are where to look first"
+            : "Tile size is capacity, colour is utilisation — the big red tiles are where to look first"
+        }
         action={
           <Button variant="ghost" size="sm" className="h-7 text-xs" asChild>
             <Link href={ROUTES.zones}>
@@ -568,7 +618,10 @@ export function DashboardView() {
       <SectionCard title="Network status" description="Zones by operating state" contentClassName="p-4">
         <div className="flex flex-wrap gap-2">
           {(["OPEN", "MAINTENANCE", "EVENT_CLOSURE", "CLOSED"] as const).map((status) => {
-            // Was the same number under every badge. It is a real count now.
+            // One source for all four. The count used to be divided by eight
+            // and floored at one for every state but OPEN — a leftover fudge
+            // that reported "1 zones" for a state no zone was in, and drew the
+            // OPEN figure from a separate request that could disagree with it.
             const count = zoneStatusCounts[status] ?? 0;
             return (
               <Link
@@ -578,7 +631,7 @@ export function DashboardView() {
               >
                 <StatusBadge status={status} />
                 <span className="text-xs text-muted-foreground">
-                  {status === "OPEN" ? DASHBOARD.zonesOpen : Math.max(1, Math.round(count / 8))} zones
+                  {count} {count === 1 ? "zone" : "zones"}
                 </span>
               </Link>
             );

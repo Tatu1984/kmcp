@@ -7,6 +7,8 @@ import {
   Banknote,
   CalendarClock,
   Clock,
+  DoorClosed,
+  DoorOpen,
   Eye,
   MapPin,
   Printer,
@@ -14,7 +16,18 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/frontend/components/ui/button";
+import { Input } from "@/frontend/components/ui/input";
+import { Label } from "@/frontend/components/ui/label";
+import { Textarea } from "@/frontend/components/ui/textarea";
 import { Separator } from "@/frontend/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/frontend/components/ui/dialog";
 import {
   Sheet,
   SheetContent,
@@ -27,14 +40,17 @@ import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StatCard } from "@/frontend/components/shared/stat-card";
 import { DataTable } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
+import { Can } from "@/frontend/components/shared/can";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Field, Money, SplitMeter } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SHIFTS } from "@/frontend/lib/mock";
-import { shiftsApi, listAll } from "@/frontend/api";
+import { shiftsApi, documentsApi, listAll } from "@/frontend/api";
 import { useResource } from "@/frontend/hooks/use-api";
+import { useDocument } from "@/frontend/hooks/use-document";
 import { toShift } from "@/frontend/lib/adapters";
+import { downloadCsv } from "@/frontend/lib/csv";
 import { formatDateTime, formatMoney, relativeTime } from "@/shared/utils/common.util";
 import type { Shift } from "@/shared/types/domain.types";
 
@@ -49,15 +65,41 @@ export function ShiftsView() {
     () => listAll((page, pageSize) => shiftsApi.list({ page, pageSize })).then((r) => r.map(toShift)),
     SHIFTS,
   );
+  // Only `run` is destructured for the column menu: it is referentially
+  // stable, so the memo below keeps its empty dependency list honest.
+  const { run: runDocument, pending: documentPending } = useDocument();
+
   const [selected, setSelected] = React.useState<Shift | null>(null);
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [verifyOpen, setVerifyOpen] = React.useState(false);
   const [escalateOpen, setEscalateOpen] = React.useState(false);
+  const [startOpen, setStartOpen] = React.useState(false);
+  const [closeOpen, setCloseOpen] = React.useState(false);
+  const [cashDeposited, setCashDeposited] = React.useState("");
+  const [closeNotes, setCloseNotes] = React.useState("");
 
-  const open = (shift: Shift) => {
+  const inspect = (shift: Shift) => {
     setSelected(shift);
     setSheetOpen(true);
   };
+
+  /**
+   * Opens the close dialog with an empty cash figure, deliberately.
+   *
+   * `CloseShiftSchema` requires `cashDeposited` and refuses to default it to
+   * what the system expects, because the close is a comparison between what was
+   * counted and what was taken. Pre-filling the expected figure here would undo
+   * that on the client and turn the count into a confirmation.
+   */
+  const startClose = (shift: Shift) => {
+    setSelected(shift);
+    setCashDeposited("");
+    setCloseNotes("");
+    setCloseOpen(true);
+  };
+
+  const closeRupees = Number(cashDeposited);
+  const canClose = cashDeposited.trim() !== "" && Number.isFinite(closeRupees) && closeRupees >= 0;
 
   const columns = React.useMemo<ColumnDef<Shift, unknown>[]>(
     () => [
@@ -150,22 +192,58 @@ export function ShiftsView() {
               <RowActions
                 label={shift.attendantName}
                 actions={[
-                  { label: "Open shift", icon: Eye, shortcut: "↵", onSelect: () => open(shift) },
+                  {
+                    label: "View shift",
+                    icon: Eye,
+                    shortcut: "↵",
+                    // GET /shifts/:id — shifts.controller.ts:54.
+                    permission: "session.read",
+                    onSelect: () => inspect(shift),
+                  },
                   {
                     label: "View GPS check-in",
                     icon: MapPin,
+                    // The fixes are on the shift row already; a trail over the
+                    // whole shift waits on the sessions work, which is what
+                    // records a position per event.
                     onSelect: () => toast.info("GPS check-in", { description: `${shift.zoneName} · ${formatDateTime(shift.startAt)}` }),
                   },
                   {
                     label: "Print shift slip",
                     icon: Printer,
-                    onSelect: () => toast.success("Shift slip queued for printing"),
+                    // GET /documents/shifts/:id — documents.controller.ts, on
+                    // session.read, which is what every read route on /shifts
+                    // takes. shift.verify guards confirming the cash, not
+                    // printing the paper somebody signs to hand it over.
+                    permission: "session.read",
+                    onSelect: () => {
+                      void runDocument(shift.id, () => documentsApi.shiftSlip(shift.id), {
+                        demo: () => toast.success("Shift slip queued for printing"),
+                        mode: "print",
+                        success: "Shift slip opened for printing",
+                        description: `${shift.attendantName} · ${shift.zoneName}`,
+                      });
+                    },
+                  },
+                  {
+                    label: "Close shift",
+                    icon: DoorClosed,
+                    hidden: shift.status !== "OPEN",
+                    separatorBefore: true,
+                    // POST /shifts/:id/close — shifts.controller.ts:76. The API
+                    // guards it with session.read, not shift.verify: closing is
+                    // the field act of declaring a deposit, and verifying it is
+                    // the separate one somebody else performs.
+                    permission: "session.read",
+                    onSelect: () => startClose(shift),
                   },
                   {
                     label: "Verify deposit",
                     icon: BadgeCheck,
                     hidden: shift.status === "OPEN" || shift.status === "VERIFIED",
                     separatorBefore: true,
+                    // POST /shifts/:id/verify — shifts.controller.ts:94.
+                    permission: "shift.verify",
                     onSelect: () => {
                       setSelected(shift);
                       setVerifyOpen(true);
@@ -176,6 +254,9 @@ export function ShiftsView() {
                     icon: TriangleAlert,
                     destructive: true,
                     hidden: shift.status !== "VARIANCE_FLAGGED",
+                    // Waits on the incidents/case module: an escalation opens a
+                    // case against the vendor and notifies their contact, and
+                    // neither the case nor the notification exists yet.
                     onSelect: () => {
                       setSelected(shift);
                       setEscalateOpen(true);
@@ -188,7 +269,9 @@ export function ShiftsView() {
         },
       },
     ],
-    [],
+    // `runDocument` is stable — useDocument memoises it — so naming it here
+    // costs no re-renders and keeps the memo honest.
+    [runDocument],
   );
 
   const openShifts = shifts.filter((s) => s.status === "OPEN").length;
@@ -201,6 +284,25 @@ export function ShiftsView() {
       <PageHeader
         title="Shifts and reconciliation"
         description="Attendant attendance with GPS check-in and check-out, and the cash tally that has to balance before a settlement can run."
+        actions={
+          /**
+           * POST /shifts/open — shifts.controller.ts:61, guarded by
+           * `session.read` rather than `shift.verify`, because opening is a
+           * field act and verifying is the supervisory one.
+           *
+           * The service then refuses anyone without an attendant record
+           * ("Only an attendant opens a shift."). The button is not hidden on
+           * the role code — roles are rows the authority edits, and gating on
+           * one here would go stale the moment they changed it — so the dialog
+           * says plainly whose shift this opens and lets the API give the real
+           * answer to an account that has no attendant behind it.
+           */
+          <Can permission="session.read">
+            <Button size="sm" className="h-9" onClick={() => setStartOpen(true)}>
+              <DoorOpen className="size-4" /> Open shift
+            </Button>
+          </Can>
+        }
       />
 
       <FadeStagger className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -243,36 +345,41 @@ export function ShiftsView() {
               .map((value) => ({ value, label: value })),
           },
         ]}
-        onRowClick={open}
-        onExport={(rows) => toast.success("Export queued", { description: `${rows.length} shifts` })}
+        onRowClick={inspect}
+        onExport={(rows, columns) => {
+          const file = downloadCsv("shifts", rows, columns);
+          toast.success("Export ready", { description: `${rows.length} shifts · ${file}` });
+        }}
         bulkActions={(rows, clear) => {
           const verifiable = rows.filter((r) => r.status === "CLOSED" || r.status === "VARIANCE_FLAGGED");
           return (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7"
-              disabled={verifiable.length === 0}
-              onClick={() => {
-                void apply(
-                  // Sequential, not concurrent: each verification is a separate
-                  // audited act against a named officer, and a half-applied
-                  // batch is easier to reason about than an interleaved one.
-                  async () => {
-                    for (const shift of verifiable) await shiftsApi.verify(shift.id);
-                  },
-                  (list) =>
-                    list.map((s) =>
-                      verifiable.some((r) => r.id === s.id) ? { ...s, status: "VERIFIED" as const } : s,
-                    ),
-                  { success: `${verifiable.length} shifts verified` },
-                )
-                  .then(clear)
-                  .catch(() => {});
-              }}
-            >
-              <BadgeCheck className="size-3.5" /> Verify deposits
-            </Button>
+            <Can permission="shift.verify">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7"
+                disabled={verifiable.length === 0}
+                onClick={() => {
+                  void apply(
+                    // Sequential, not concurrent: each verification is a separate
+                    // audited act against a named officer, and a half-applied
+                    // batch is easier to reason about than an interleaved one.
+                    async () => {
+                      for (const shift of verifiable) await shiftsApi.verify(shift.id);
+                    },
+                    (list) =>
+                      list.map((s) =>
+                        verifiable.some((r) => r.id === s.id) ? { ...s, status: "VERIFIED" as const } : s,
+                      ),
+                    { success: `${verifiable.length} shifts verified` },
+                  )
+                    .then(clear)
+                    .catch(() => {});
+                }}
+              >
+                <BadgeCheck className="size-3.5" /> Verify deposits
+              </Button>
+            </Can>
           );
         }}
         isLoading={isLoading}
@@ -373,19 +480,51 @@ export function ShiftsView() {
               </div>
 
               <SheetFooter className="sm:flex-row">
-                <Button variant="outline" className="flex-1" onClick={() => toast.success("Shift slip printed")}>
-                  <Printer className="size-4" /> Print slip
-                </Button>
-                <Button
-                  className="flex-1"
-                  disabled={selected.status === "OPEN" || selected.status === "VERIFIED"}
-                  onClick={() => {
-                    setSheetOpen(false);
-                    setVerifyOpen(true);
-                  }}
-                >
-                  <BadgeCheck className="size-4" /> Verify deposit
-                </Button>
+                {/* GET /documents/shifts/:id — documents.controller.ts, as the
+                    row action does. */}
+                <Can permission="session.read">
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    disabled={documentPending !== null}
+                    onClick={() => {
+                      void runDocument(selected.id, () => documentsApi.shiftSlip(selected.id), {
+                        demo: () => toast.success("Shift slip printed"),
+                        mode: "print",
+                        success: "Shift slip opened for printing",
+                        description: `${selected.attendantName} · ${selected.zoneName}`,
+                      });
+                    }}
+                  >
+                    <Printer className="size-4" /> Print slip
+                  </Button>
+                </Can>
+                {selected.status === "OPEN" ? (
+                  <Can permission="session.read">
+                    <Button
+                      className="flex-1"
+                      onClick={() => {
+                        setSheetOpen(false);
+                        startClose(selected);
+                      }}
+                    >
+                      <DoorClosed className="size-4" /> Close shift
+                    </Button>
+                  </Can>
+                ) : (
+                  <Can permission="shift.verify">
+                    <Button
+                      className="flex-1"
+                      disabled={selected.status === "VERIFIED"}
+                      onClick={() => {
+                        setSheetOpen(false);
+                        setVerifyOpen(true);
+                      }}
+                    >
+                      <BadgeCheck className="size-4" /> Verify deposit
+                    </Button>
+                  </Can>
+                )}
               </SheetFooter>
             </>
           )}
@@ -426,11 +565,143 @@ export function ShiftsView() {
         reason={{ label: "What did you find?", placeholder: "Third shortfall this month for the same attendant…", required: true }}
         description="An escalation opens a case against the vendor, notifies their contact, and holds the amount back from the next settlement."
         onConfirm={(reason) => {
+          // Waits on the incidents/case module and the messaging module: there
+          // is no endpoint that opens a case against a vendor, and none that
+          // notifies their contact. Recorded here as a toast rather than
+          // pretending a case number exists.
           toast.success("Variance escalated", {
             description: `${selected?.attendantName} · ${reason}`,
           });
         }}
       />
+
+      {/* -------------------------------------------------------- open shift */}
+      <ConfirmDialog
+        open={startOpen}
+        onOpenChange={setStartOpen}
+        title="Open a shift?"
+        confirmLabel="Open shift"
+        description={
+          <div className="space-y-2">
+            <p>
+              This starts a shift for the attendant signed in, in their default zone, and every
+              session and payment taken from now until it is closed belongs to it.
+            </p>
+            <p className="text-muted-foreground">
+              Only an account with an attendant record can open one — a supervisor cannot open a
+              shift on somebody else&apos;s behalf, because the person who declares the cash at the
+              end has to be the person who took it. Reopening is harmless: an attendant who already
+              has a shift open simply gets that one back.
+            </p>
+          </div>
+        }
+        onConfirm={() =>
+          apply(
+            // No zoneId: the API falls back to the attendant's default zone,
+            // which is the one they are standing in on an ordinary day.
+            () => shiftsApi.open(),
+            (list) => list,
+            { success: "Shift opened" },
+          ).catch(() => {})
+        }
+      />
+
+      {/* ------------------------------------------------------- close shift */}
+      <Dialog open={closeOpen} onOpenChange={setCloseOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Close {selected?.attendantName}&apos;s shift</DialogTitle>
+            <DialogDescription>
+              Closing compares the cash being handed in against what the payments say was taken. Any
+              gap is recorded as a variance under the name of whoever closed the shift.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="close-cash">Cash deposited (₹)</Label>
+              <Input
+                id="close-cash"
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={cashDeposited}
+                onChange={(e) => setCashDeposited(e.target.value)}
+                placeholder="Count the notes and type the total"
+              />
+              <p className="text-xs text-muted-foreground">
+                Deliberately blank. The expected figure is not pre-filled — that would turn a count
+                into a confirmation, which is the one thing this step exists to prevent.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="close-notes">Notes (optional)</Label>
+              <Textarea
+                id="close-notes"
+                rows={3}
+                value={closeNotes}
+                onChange={(e) => setCloseNotes(e.target.value)}
+                placeholder="Two receipts written by hand after the handset lost signal…"
+              />
+            </div>
+
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-3">
+              <p className="text-xs text-muted-foreground text-pretty">
+                A shift with a session still running cannot be closed — that fare belongs to this
+                shift and would otherwise be stranded outside every one of them.
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCloseOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!canClose}
+              onClick={() => {
+                const shift = selected;
+                if (!shift || !canClose) return;
+                // Money is integer paise everywhere below this line.
+                const paise = Math.round(closeRupees * 100);
+                void apply(
+                  () =>
+                    shiftsApi.close(shift.id, {
+                      cashDeposited: paise,
+                      notes: closeNotes.trim() || undefined,
+                    }),
+                  (list) =>
+                    list.map((s) =>
+                      s.id === shift.id
+                        ? {
+                            ...s,
+                            // The demo copy mirrors what the API computes: a gap
+                            // either way flags the shift rather than balancing it.
+                            status:
+                              paise === s.cashExpected
+                                ? ("CLOSED" as const)
+                                : ("VARIANCE_FLAGGED" as const),
+                            endAt: new Date().toISOString(),
+                            cashDeposited: paise,
+                            varianceAmount: paise - s.cashExpected,
+                          }
+                        : s,
+                    ),
+                  { success: "Shift closed", description: shift.attendantName },
+                )
+                  .then(() => setCloseOpen(false))
+                  // The error is already a toast; keep the dialog open so the
+                  // counted figure does not have to be typed again.
+                  .catch(() => {});
+              }}
+            >
+              <DoorClosed className="size-4" /> Close shift
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

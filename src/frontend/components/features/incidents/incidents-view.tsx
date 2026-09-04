@@ -38,12 +38,16 @@ import { DataTable } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
+import { Can, NOT_PERMITTED } from "@/frontend/components/shared/can";
+import { usePermissions } from "@/frontend/hooks/use-permissions";
 import { Field, Plate } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
-import { INCIDENTS } from "@/frontend/lib/mock";
+import { IncidentFormSheet, type IncidentDraft } from "./incident-form-sheet";
+import { INCIDENTS, ZONES } from "@/frontend/lib/mock";
 import { incidentsApi, usersApi, listAll } from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
 import { toIncident } from "@/frontend/lib/adapters";
+import { downloadCsv } from "@/frontend/lib/csv";
 import { formatDateTime, relativeTime, titleCase } from "@/shared/utils/common.util";
 import type { Incident, IncidentStatus } from "@/shared/types/domain.types";
 
@@ -68,9 +72,18 @@ export function IncidentsView() {
     listAll((page, pageSize) => usersApi.list({ page, pageSize, status: "ACTIVE" })),
   );
 
+  const { can } = usePermissions();
+  /**
+   * Everything after an incident is raised — assigning it, picking it up,
+   * closing it — sits behind `incident.manage` on the API. Raising one does
+   * not: see the report button below.
+   */
+  const canManage = can("incident.manage");
+
   const [selected, setSelected] = React.useState<Incident | null>(null);
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [rejectOpen, setRejectOpen] = React.useState(false);
+  const [reportOpen, setReportOpen] = React.useState(false);
   const [note, setNote] = React.useState("");
 
   const open = (incident: Incident) => {
@@ -100,6 +113,32 @@ export function IncidentsView() {
         success: status === "RESOLVED" ? "Incident resolved" : "Incident rejected",
         description: incident.reference,
       },
+    );
+
+  /**
+   * Raises a new incident. The demo branch invents the row the server would
+   * have written back, so the walkthrough shows the report landing at the top
+   * of the queue rather than a toast over an unchanged table.
+   */
+  const report = (draft: IncidentDraft) =>
+    apply(
+      () => incidentsApi.create(draft),
+      (list) => [
+        {
+          id: `inc_new_${list.length + 1}`,
+          reference: `INC-${String(list.length + 1).padStart(5, "0")}`,
+          type: draft.type,
+          zoneName: ZONES.find((z) => z.id === draft.zoneId)?.name ?? "—",
+          description: draft.description,
+          reportedBy: "You",
+          reporterRole: "ZONE_OFFICER",
+          photoCount: 0,
+          status: "OPEN",
+          createdAt: new Date().toISOString(),
+        } satisfies Incident,
+        ...list,
+      ],
+      { success: "Incident reported", description: "It is now in the open queue." },
     );
 
   const columns = React.useMemo<ColumnDef<Incident, unknown>[]>(
@@ -188,10 +227,15 @@ export function IncidentsView() {
               <RowActions
                 label={incident.reference}
                 actions={[
+                  // Opening the sheet reads nothing the table does not already
+                  // hold, so it needs no permission of its own — the list
+                  // behind it is what `session.read` already gated.
                   { label: "Open incident", icon: Eye, shortcut: "↵", onSelect: () => open(incident) },
                   {
                     label: "Assign to",
                     icon: UserCheck,
+                    // POST /incidents/:id/assign — incidents.controller.ts:70
+                    permission: "incident.manage",
                     hidden: closed,
                     separatorBefore: true,
                     children: (assignees.data ?? []).slice(0, 12).map((assignee) => ({
@@ -218,6 +262,8 @@ export function IncidentsView() {
                   {
                     label: "Mark in progress",
                     icon: Clock3,
+                    // POST /incidents/:id/start — incidents.controller.ts:83
+                    permission: "incident.manage",
                     hidden: closed || incident.status === "IN_PROGRESS",
                     onSelect: () => {
                       void apply(
@@ -233,6 +279,8 @@ export function IncidentsView() {
                   {
                     label: "Resolve",
                     icon: CheckCircle2,
+                    // POST /incidents/:id/resolve — incidents.controller.ts:98
+                    permission: "incident.manage",
                     hidden: closed,
                     separatorBefore: true,
                     onSelect: () => open(incident),
@@ -240,6 +288,8 @@ export function IncidentsView() {
                   {
                     label: "Reject as invalid",
                     icon: CircleSlash,
+                    // POST /incidents/:id/reject — incidents.controller.ts:114
+                    permission: "incident.manage",
                     destructive: true,
                     hidden: closed,
                     onSelect: () => {
@@ -269,6 +319,21 @@ export function IncidentsView() {
       <PageHeader
         title="Incidents"
         description="Illegal parking, accidents, vehicle damage and disputes reported from the kerb and from the citizen app."
+        actions={
+          /**
+           * `session.read`, not `incident.manage` — POST /incidents is guarded
+           * on the former (incidents.controller.ts:55, with the reason spelled
+           * out beside it: an attendant reports what they see, and they are not
+           * an incident manager). Gating this on `incident.manage` would hide
+           * the button from most of the accounts the API would happily accept a
+           * report from.
+           */
+          <Can permission="session.read">
+            <Button size="sm" className="h-9" onClick={() => setReportOpen(true)}>
+              <ShieldAlert className="size-4" /> Report an incident
+            </Button>
+          </Can>
+        }
       />
 
       <FadeStagger className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -324,32 +389,37 @@ export function IncidentsView() {
           },
         ]}
         onRowClick={open}
-        onExport={(rows) => toast.success("Export queued", { description: `${rows.length} incidents` })}
+        onExport={(rows, columns) => {
+          const file = downloadCsv("incidents", rows, columns);
+          toast.success("Export ready", { description: `${rows.length} incidents · ${file}` });
+        }}
         bulkActions={(rows, clear) => {
           const startable = rows.filter((r) => r.status === "OPEN");
           return (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7"
-              disabled={startable.length === 0}
-              onClick={() => {
-                void apply(
-                  async () => {
-                    for (const incident of startable) await incidentsApi.start(incident.id);
-                  },
-                  (list) =>
-                    list.map((i) =>
-                      startable.some((r) => r.id === i.id) ? { ...i, status: "IN_PROGRESS" as const } : i,
-                    ),
-                  { success: `${startable.length} incidents moved to in progress` },
-                )
-                  .then(clear)
-                  .catch(() => {});
-              }}
-            >
-              Mark in progress
-            </Button>
+            <Can permission="incident.manage">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7"
+                disabled={startable.length === 0}
+                onClick={() => {
+                  void apply(
+                    async () => {
+                      for (const incident of startable) await incidentsApi.start(incident.id);
+                    },
+                    (list) =>
+                      list.map((i) =>
+                        startable.some((r) => r.id === i.id) ? { ...i, status: "IN_PROGRESS" as const } : i,
+                      ),
+                    { success: `${startable.length} incidents moved to in progress` },
+                  )
+                    .then(clear)
+                    .catch(() => {});
+                }}
+              >
+                Mark in progress
+              </Button>
+            </Can>
           );
         }}
         isLoading={isLoading}
@@ -420,7 +490,11 @@ export function IncidentsView() {
                   <Label htmlFor="assignee">Assign to</Label>
                   <Select
                     value={selected.assignedToId ?? "__none"}
-                    disabled={selected.status === "RESOLVED" || selected.status === "REJECTED"}
+                    disabled={
+                      !canManage ||
+                      selected.status === "RESOLVED" ||
+                      selected.status === "REJECTED"
+                    }
                     onValueChange={(v) => {
                       if (v === "__none") return;
                       const assignee = (assignees.data ?? []).find((a) => a.id === v);
@@ -460,6 +534,7 @@ export function IncidentsView() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {!canManage && <p className="text-xs text-muted-foreground">{NOT_PERMITTED}</p>}
                 </div>
 
                 <div className="space-y-1.5">
@@ -478,9 +553,15 @@ export function IncidentsView() {
               </div>
 
               <SheetFooter className="sm:flex-row">
+                {/* Closing an incident either way is `incident.manage`
+                    (incidents.controller.ts:98 and :114). Disabled rather than
+                    removed, so an officer can see the sheet is complete and
+                    that closing it is simply someone else's call. */}
                 <Button
                   variant="outline"
                   className="flex-1 text-destructive hover:text-destructive"
+                  disabled={!canManage}
+                  title={canManage ? undefined : NOT_PERMITTED}
                   onClick={() => {
                     setSheetOpen(false);
                     setRejectOpen(true);
@@ -490,9 +571,10 @@ export function IncidentsView() {
                 </Button>
                 <Button
                   className="flex-1"
+                  title={canManage ? undefined : NOT_PERMITTED}
                   // The API requires ten characters, so the button agrees rather
                   // than letting the request bounce back as a validation error.
-                  disabled={note.trim().length < 10}
+                  disabled={!canManage || note.trim().length < 10}
                   onClick={() => {
                     void close(selected, "RESOLVED", note.trim())
                       .then(() => setSheetOpen(false))
@@ -518,6 +600,12 @@ export function IncidentsView() {
         onConfirm={(reason) => {
           if (selected) void close(selected, "REJECTED", (reason ?? "").trim()).catch(() => {});
         }}
+      />
+
+      <IncidentFormSheet
+        open={reportOpen}
+        onOpenChange={setReportOpen}
+        onSubmit={(draft) => report(draft)}
       />
     </div>
   );

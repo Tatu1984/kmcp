@@ -43,15 +43,34 @@ import { DataTable } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
+import { Can } from "@/frontend/components/shared/can";
 import { Money, Plate, SectionCard } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { PASSES, PASS_PLANS, NOW } from "@/frontend/lib/mock";
-import { passesApi, passPlansApi, vehicleTypesApi, zonesApi, listAll } from "@/frontend/api";
+import { isLiveApi } from "@/config/env";
+import {
+  passesApi,
+  passPlansApi,
+  vehicleTypesApi,
+  zonesApi,
+  listAll,
+  messagingApi,
+  channelLabel,
+  type MessageChannel,
+} from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
+import { useMessaging } from "@/frontend/hooks/use-messaging";
 import { toPass, toPassPlan } from "@/frontend/lib/adapters";
 import { formatDate, formatMoney } from "@/shared/utils/common.util";
 import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
 import type { Pass, PassPlan } from "@/shared/types/domain.types";
+
+/** One list, shared by the row menu and the QR dialog. */
+const PASS_CHANNELS: { channel: MessageChannel; label: string }[] = [
+  { channel: "SMS", label: "By SMS" },
+  { channel: "WHATSAPP", label: "By WhatsApp" },
+  { channel: "EMAIL", label: "By email" },
+];
 
 /** Blank form for the create-plan dialog. */
 const EMPTY_PLAN = {
@@ -95,8 +114,35 @@ export function PassesView() {
     listAll((page, pageSize) => zonesApi.list({ page, pageSize })),
   );
 
+  const { send, isSending } = useMessaging();
+
+  /**
+   * Sends a pass to its holder, or prompts them to renew it.
+   *
+   * One helper for both because they are the same act with a different message:
+   * the API renders them from one catalogue, so what a holder reads about their
+   * pass says the same thing whichever button an officer pressed.
+   */
+  const sendPass = React.useCallback(
+    (passIds: string[], kind: "issued" | "renewal", channels: MessageChannel[], subject: string) =>
+      void send(() => messagingApi.sendPasses({ passIds, kind, channels }), {
+        success:
+          kind === "renewal"
+            ? passIds.length === 1
+              ? "Renewal link sent"
+              : `Renewal reminders sent to ${passIds.length} holders`
+            : passIds.length === 1
+              ? "Pass sent to holder"
+              : `Pass sent to ${passIds.length} holders`,
+        description: `${subject} · by ${channels.map(channelLabel).join(" and ")}`,
+      }),
+    [send],
+  );
+
   const [selected, setSelected] = React.useState<Pass | null>(null);
   const [planOpen, setPlanOpen] = React.useState(false);
+  /** Null while creating; the plan being changed while editing. */
+  const [editingPlan, setEditingPlan] = React.useState<PassPlan | null>(null);
   const [planForm, setPlanForm] = React.useState(EMPTY_PLAN);
   const [cancelOpen, setCancelOpen] = React.useState(false);
   const [qrOpen, setQrOpen] = React.useState(false);
@@ -126,12 +172,22 @@ export function PassesView() {
     return (zones.data ?? []).filter((z) => z.wardId === planForm.wardId).map((z) => z.id);
   }, [planForm.scope, planForm.zoneId, planForm.wardId, zones.data]);
 
-  const canCreatePlan =
+  /**
+   * Editing asks for less than creating does.
+   *
+   * `PATCH /pass-plans/:id` takes a partial, so an edit sends only the three
+   * fields this dialog offers when a plan is open for change — what it costs,
+   * how long it runs and what it is called. What a plan *covers* is not edited
+   * here: a plan for a different vehicle or a different set of zones is a
+   * different plan, and re-scoping one in place would silently move every
+   * renewal onto terms nobody chose.
+   */
+  const canSavePlan =
     planForm.name.trim().length >= 3 &&
-    Boolean(planForm.vehicleTypeId) &&
     Number(planForm.durationDays) >= 1 &&
     Number(planForm.price) >= 0 &&
-    (planForm.scope === "all" || planZoneIds.length > 0);
+    (editingPlan !== null ||
+      (Boolean(planForm.vehicleTypeId) && (planForm.scope === "all" || planZoneIds.length > 0)));
 
   const columns = React.useMemo<ColumnDef<Pass, unknown>[]>(
     () => [
@@ -218,30 +274,39 @@ export function PassesView() {
                     },
                   },
                   {
+                    /**
+                     * POST /messaging/passes with `kind: issued` —
+                     * messaging.controller.ts, on pass.write, the grant every
+                     * other write on this screen carries. It sends the pass
+                     * code rather than the QR image: an SMS cannot carry one
+                     * and an emailed image is routinely stripped, and the code
+                     * is the credential the app renders as a QR at the kerb.
+                     */
                     label: "Re-send to holder",
                     icon: Send,
+                    permission: "pass.write",
                     separatorBefore: true,
-                    children: [
-                      { label: "By SMS", onSelect: () => toast.success("Pass sent by SMS") },
-                      { label: "By WhatsApp", onSelect: () => toast.success("Pass sent on WhatsApp") },
-                      { label: "By email", onSelect: () => toast.success("Pass emailed") },
-                    ],
+                    children: PASS_CHANNELS.map(({ channel, label }) => ({
+                      label,
+                      permission: "pass.write" as const,
+                      onSelect: () => sendPass([pass.id], "issued", [channel], pass.code),
+                    })),
                   },
                   {
                     label: "Send renewal link",
                     icon: RefreshCw,
+                    // POST /messaging/passes with `kind: renewal`. Renewing is
+                    // a purchase, not a status change: the holder buys a fresh
+                    // pass in the app, so this prompts them and links there —
+                    // it does not renew anything.
+                    permission: "pass.write",
                     hidden: pass.status === "CANCELLED",
-                    // Renewing is a purchase, not a status change: the holder
-                    // buys a fresh pass in the app. All this end can do is
-                    // prompt them, which is why nothing here marks it active.
-                    onSelect: () =>
-                      toast.info("Renewal link sent", {
-                        description: `${pass.code} · ${pass.holderPhone}`,
-                      }),
+                    onSelect: () => sendPass([pass.id], "renewal", ["SMS", "EMAIL"], pass.code),
                   },
                   {
                     label: "Cancel pass",
                     icon: Ban,
+                    permission: "pass.write",
                     destructive: true,
                     hidden: pass.status === "CANCELLED",
                     separatorBefore: true,
@@ -257,12 +322,31 @@ export function PassesView() {
         },
       },
     ],
-    [],
+    [sendPass],
   );
 
   const active = passes.filter((p) => p.status === "ACTIVE").length;
+
+  /**
+   * "Expiring within seven days" is measured from the actual clock, not from
+   * the demo dataset's frozen `NOW`.
+   *
+   * That constant is fixed at the instant the bundled city was generated, so on
+   * a live deployment this count was being measured from a date that recedes
+   * further into the past every day the build is not rebuilt — a month stale by
+   * the time it was noticed, and silently wrong rather than visibly broken.
+   * Demo mode keeps the frozen clock, because the whole dataset is arranged
+   * around it and a real `Date.now()` there would report every pass as expired.
+   *
+   * Read once when the screen mounts, through a state initialiser, rather than
+   * on each render: `Date.now()` is impure and the React Compiler rejects it
+   * during render — correctly, since a value that changes every render is not
+   * something a render may depend on. Once per visit is the right granularity
+   * for a seven-day window anyway.
+   */
+  const [asOf] = React.useState(() => (isLiveApi ? Date.now() : NOW.getTime()));
   const expiring = passes.filter(
-    (p) => p.status === "ACTIVE" && new Date(p.validTo).getTime() - NOW.getTime() < 7 * 86400000,
+    (p) => p.status === "ACTIVE" && new Date(p.validTo).getTime() - asOf < 7 * 86400000,
   ).length;
   const revenue = passes.filter((p) => p.status === "ACTIVE").reduce((s, p) => s + p.price, 0);
 
@@ -272,9 +356,19 @@ export function PassesView() {
         title="Passes and subscriptions"
         description="Monthly and season passes. A valid pass waives the session charge inside its zone scope, verified by QR at the kerb."
         actions={
-          <Button size="sm" className="h-9" onClick={() => setPlanOpen(true)}>
-            <Plus className="size-4" /> New plan
-          </Button>
+          <Can permission="pass.write">
+            <Button
+              size="sm"
+              className="h-9"
+              onClick={() => {
+                setEditingPlan(null);
+                setPlanForm(EMPTY_PLAN);
+                setPlanOpen(true);
+              }}
+            >
+              <Plus className="size-4" /> New plan
+            </Button>
+          </Can>
         }
       />
 
@@ -325,17 +419,37 @@ export function PassesView() {
             ]}
             onExport={(rows) => toast.success("Export queued", { description: `${rows.length} passes` })}
             bulkActions={(rows, clear) => (
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7"
-                onClick={() => {
-                  toast.success(`Renewal reminders sent to ${rows.length} holders`);
-                  clear();
-                }}
-              >
-                <Send className="size-3.5" /> Send renewal reminders
-              </Button>
+              /**
+               * Reminders go to passes that can still be renewed. A cancelled
+               * pass is not lapsing — it was ended deliberately — and prompting
+               * its former holder to renew would be the portal nagging someone
+               * about a decision they already made.
+               */
+              <Can permission="pass.write">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  onClick={() => {
+                    const renewable = rows.filter((p) => p.status !== "CANCELLED");
+                    if (renewable.length === 0) {
+                      toast.error("Nothing to send", {
+                        description: "Every selected pass has been cancelled.",
+                      });
+                      return;
+                    }
+                    sendPass(
+                      renewable.map((p) => p.id),
+                      "renewal",
+                      ["SMS", "EMAIL"],
+                      `${renewable.length} passes`,
+                    );
+                    clear();
+                  }}
+                >
+                  <Send className="size-3.5" /> Send renewal reminders
+                </Button>
+              </Can>
             )}
             isLoading={isLoading}
             emptyTitle={emptyReason ? "Nothing to show" : "No passes issued"}
@@ -356,10 +470,26 @@ export function PassesView() {
                   <RowActions
                     label={plan.name}
                     actions={[
-                      { label: "Edit plan", icon: Pencil, onSelect: () => toast.info("Editing plan", { description: plan.name }) },
+                      {
+                        label: "Edit plan",
+                        icon: Pencil,
+                        permission: "pass.write",
+                        onSelect: () => {
+                          setEditingPlan(plan);
+                          setPlanForm({
+                            ...EMPTY_PLAN,
+                            name: plan.name,
+                            durationDays: String(plan.durationDays),
+                            // Paise on the wire, rupees in the form.
+                            price: String(plan.price / 100),
+                          });
+                          setPlanOpen(true);
+                        },
+                      },
                       {
                         label: plan.isActive ? "Stop selling" : "Resume selling",
                         icon: Ban,
+                        permission: "pass.write",
                         destructive: plan.isActive,
                         onSelect: () => {
                           void applyPlan(
@@ -402,14 +532,24 @@ export function PassesView() {
         </TabsContent>
       </Tabs>
 
-      {/* -------------------------------------------------------- new plan */}
-      <Dialog open={planOpen} onOpenChange={setPlanOpen}>
+      {/* -------------------------------------------------- new / edit plan */}
+      <Dialog
+        open={planOpen}
+        onOpenChange={(open) => {
+          setPlanOpen(open);
+          if (!open) {
+            setEditingPlan(null);
+            setPlanForm(EMPTY_PLAN);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create a pass plan</DialogTitle>
+            <DialogTitle>{editingPlan ? `Edit ${editingPlan.name}` : "Create a pass plan"}</DialogTitle>
             <DialogDescription>
-              A plan defines what citizens can buy. Passes issued against it inherit its scope and
-              duration.
+              {editingPlan
+                ? "Applies to what is sold next. Passes already issued keep the price and duration they were bought on."
+                : "A plan defines what citizens can buy. Passes issued against it inherit its scope and duration."}
             </DialogDescription>
           </DialogHeader>
 
@@ -423,44 +563,61 @@ export function PassesView() {
                 onChange={(e) => setPlanForm({ ...planForm, name: e.target.value })}
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="plan-vehicle">Vehicle type</Label>
-              <Select
-                value={planForm.vehicleTypeId}
-                onValueChange={(v) => setPlanForm({ ...planForm, vehicleTypeId: v })}
-              >
-                <SelectTrigger id="plan-vehicle">
-                  <SelectValue placeholder="Choose a vehicle type" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(vehicleTypes.data ?? []).map((type) => (
-                    <SelectItem key={type.id} value={type.id}>
-                      {type.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="plan-scope">Zone scope</Label>
-              <Select
-                value={planForm.scope}
-                onValueChange={(v) =>
-                  setPlanForm({ ...planForm, scope: v as typeof planForm.scope, wardId: "", zoneId: "" })
-                }
-              >
-                <SelectTrigger id="plan-scope">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="zone">Single zone</SelectItem>
-                  <SelectItem value="ward">All zones in ward</SelectItem>
-                  <SelectItem value="all">All zones (city-wide)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
 
-            {planForm.scope === "zone" && (
+            {editingPlan ? (
+              <div className="rounded-lg border bg-muted/25 p-3 text-xs text-muted-foreground text-pretty sm:col-span-2">
+                Covers {VEHICLE_TYPE_LABELS[editingPlan.vehicleType].toLowerCase()} ·{" "}
+                {editingPlan.zoneScope.toLowerCase()}. What a plan covers is not changed here — a
+                plan for a different vehicle or a different set of zones is a different plan, and
+                re-scoping this one would move every renewal onto terms nobody chose.
+              </div>
+            ) : (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor="plan-vehicle">Vehicle type</Label>
+                  <Select
+                    value={planForm.vehicleTypeId}
+                    onValueChange={(v) => setPlanForm({ ...planForm, vehicleTypeId: v })}
+                  >
+                    <SelectTrigger id="plan-vehicle">
+                      <SelectValue placeholder="Choose a vehicle type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(vehicleTypes.data ?? []).map((type) => (
+                        <SelectItem key={type.id} value={type.id}>
+                          {type.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="plan-scope">Zone scope</Label>
+                  <Select
+                    value={planForm.scope}
+                    onValueChange={(v) =>
+                      setPlanForm({
+                        ...planForm,
+                        scope: v as typeof planForm.scope,
+                        wardId: "",
+                        zoneId: "",
+                      })
+                    }
+                  >
+                    <SelectTrigger id="plan-scope">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="zone">Single zone</SelectItem>
+                      <SelectItem value="ward">All zones in ward</SelectItem>
+                      <SelectItem value="all">All zones (city-wide)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
+
+            {!editingPlan && planForm.scope === "zone" && (
               <div className="space-y-1.5 sm:col-span-2">
                 <Label htmlFor="plan-zone">Zone</Label>
                 <Select
@@ -481,7 +638,7 @@ export function PassesView() {
               </div>
             )}
 
-            {planForm.scope === "ward" && (
+            {!editingPlan && planForm.scope === "ward" && (
               <div className="space-y-1.5 sm:col-span-2">
                 <Label htmlFor="plan-ward">Ward</Label>
                 <Select
@@ -531,8 +688,13 @@ export function PassesView() {
                 <Label htmlFor="plan-auto" className="text-sm">
                   Auto-renew reminders
                 </Label>
+                {/* Renewal reminders can be sent — select the passes and use
+                    the bulk action. What does not exist is a scheduler that
+                    sweeps for lapsing passes and sends them unprompted, so
+                    this stays off rather than promising an automation nothing
+                    runs. */}
                 <p className="text-xs text-muted-foreground">
-                  Reminders are not built yet, so this is off and cannot be turned on.
+                  Nothing sends these on a schedule yet. Send reminders from the passes list.
                 </p>
               </div>
               <Switch id="plan-auto" checked={false} disabled />
@@ -544,42 +706,58 @@ export function PassesView() {
               Cancel
             </Button>
             <Button
-              disabled={!canCreatePlan}
+              disabled={!canSavePlan}
               onClick={() => {
+                const name = planForm.name.trim();
+                const durationDays = Number(planForm.durationDays);
+                // The form is in rupees because that is what a price card is
+                // written in; everything past this line is paise.
+                const price = Math.round(Number(planForm.price) * 100);
+                const target = editingPlan;
+
                 void applyPlan(
                   () =>
-                    passPlansApi.create({
-                      name: planForm.name.trim(),
-                      vehicleTypeId: planForm.vehicleTypeId,
-                      zoneIds: planZoneIds,
-                      durationDays: Number(planForm.durationDays),
-                      // The form is in rupees because that is what a price card
-                      // is written in; everything past this line is paise.
-                      price: Math.round(Number(planForm.price) * 100),
-                    }),
-                  (list) => [
-                    ...list,
-                    {
-                      id: `plan_${planForm.name.trim()}`,
-                      name: planForm.name.trim(),
-                      vehicleType: "CAR" as const,
-                      zoneScope: planForm.scope === "all" ? "All zones" : `${planZoneIds.length} zones`,
-                      durationDays: Number(planForm.durationDays),
-                      price: Math.round(Number(planForm.price) * 100),
-                      isActive: true,
-                      activePasses: 0,
-                    },
-                  ],
-                  { success: "Plan created", description: "It is now on sale in the citizen app." },
+                    target
+                      ? passPlansApi.update(target.id, { name, durationDays, price })
+                      : passPlansApi.create({
+                          name,
+                          vehicleTypeId: planForm.vehicleTypeId,
+                          zoneIds: planZoneIds,
+                          durationDays,
+                          price,
+                        }),
+                  (list) =>
+                    target
+                      ? list.map((p) =>
+                          p.id === target.id ? { ...p, name, durationDays, price } : p,
+                        )
+                      : [
+                          ...list,
+                          {
+                            id: `plan_${name}`,
+                            name,
+                            vehicleType: "CAR" as const,
+                            zoneScope:
+                              planForm.scope === "all" ? "All zones" : `${planZoneIds.length} zones`,
+                            durationDays,
+                            price,
+                            isActive: true,
+                            activePasses: 0,
+                          },
+                        ],
+                  target
+                    ? { success: "Plan updated", description: "It applies to the next pass sold." }
+                    : { success: "Plan created", description: "It is now on sale in the citizen app." },
                 )
                   .then(() => {
                     setPlanOpen(false);
+                    setEditingPlan(null);
                     setPlanForm(EMPTY_PLAN);
                   })
                   .catch(() => {});
               }}
             >
-              Create plan
+              {editingPlan ? "Save plan" : "Create plan"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -607,9 +785,20 @@ export function PassesView() {
             <Button variant="outline" onClick={() => setQrOpen(false)}>
               Close
             </Button>
-            <Button onClick={() => toast.success("Pass sent to holder")}>
-              <Send className="size-4" /> Send to holder
-            </Button>
+            {/* The same send as the ⋯ menu's "Re-send to holder", on the two
+                channels a citizen is most likely to still have when they reach
+                the kerb without their phone unlocked. */}
+            <Can permission="pass.write">
+              <Button
+                disabled={isSending || !selected}
+                onClick={() => {
+                  if (!selected) return;
+                  sendPass([selected.id], "issued", ["SMS", "EMAIL"], selected.code);
+                }}
+              >
+                <Send className="size-4" /> Send to holder
+              </Button>
+            </Can>
           </DialogFooter>
         </DialogContent>
       </Dialog>

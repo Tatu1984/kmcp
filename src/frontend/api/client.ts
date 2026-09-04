@@ -1,5 +1,6 @@
 import { clientEnv } from "@/config/env";
 import { API_CONFIG } from "@/config/api.config";
+import { reportApiError } from "@/observability/sentry";
 import type { ApiMeta } from "@/shared/types/common.types";
 
 /** Thrown for every non-2xx response. Branch on `code`, never on `message`. */
@@ -139,6 +140,31 @@ async function refreshTokens(): Promise<TokenPair | null> {
   return refreshInFlight;
 }
 
+/**
+ * Reports the error, then hands it back to be thrown.
+ *
+ * Every failure in this file leaves through here, so nothing can be added later
+ * that fails silently. `reportApiError` decides what is worth reporting —
+ * ordinary 4xx are not; see the note on `isReportable` — and carries
+ * `ApiError.requestId` through as a tag so the event and the API's own audit
+ * rows for the same request can be found from one another.
+ *
+ * The URL carries its query string, because which filters a screen had applied
+ * is most of what distinguishes one failing list from another. It is redacted
+ * before it is sent — a search box here is routinely a registration number.
+ *
+ * Reporting must never be the reason a request fails, so it is best-effort:
+ * whatever happens in there, the caller still gets the ApiError it expected.
+ */
+function fail(error: ApiError, method: string | undefined, url: string): ApiError {
+  try {
+    reportApiError(error, { method, url });
+  } catch {
+    // An error-reporting failure is not worth replacing the real error with.
+  }
+  return error;
+}
+
 async function send<T>(path: string, options: RequestOptions, retrying = false): Promise<ApiResult<T>> {
   const { body, query, idempotencyKey, anonymous, timeoutMs, headers, ...rest } = options;
 
@@ -154,9 +180,11 @@ async function send<T>(path: string, options: RequestOptions, retrying = false):
   const auth = anonymous ? null : getTokens();
   if (auth?.accessToken) requestHeaders.set("authorization", `Bearer ${auth.accessToken}`);
 
+  const url = buildUrl(path, query);
+
   let response: Response;
   try {
-    response = await fetch(buildUrl(path, query), {
+    response = await fetch(url, {
       ...rest,
       headers: requestHeaders,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -165,9 +193,17 @@ async function send<T>(path: string, options: RequestOptions, retrying = false):
   } catch (error) {
     clearTimeout(timer);
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new ApiError("TIMEOUT", "The request took too long. Please try again.", 408);
+      throw fail(
+        new ApiError("TIMEOUT", "The request took too long. Please try again.", 408),
+        options.method,
+        url,
+      );
     }
-    throw new ApiError("NETWORK_ERROR", "Could not reach the server. Check your connection.", 0);
+    throw fail(
+      new ApiError("NETWORK_ERROR", "Could not reach the server. Check your connection.", 0),
+      options.method,
+      url,
+    );
   }
   clearTimeout(timer);
 
@@ -183,12 +219,16 @@ async function send<T>(path: string, options: RequestOptions, retrying = false):
     | null;
 
   if (!response.ok || !payload?.success) {
-    throw new ApiError(
-      payload?.error?.code ?? "INTERNAL_ERROR",
-      payload?.error?.message ?? "Something went wrong on our side.",
-      response.status,
-      payload?.error?.details,
-      payload?.meta?.requestId,
+    throw fail(
+      new ApiError(
+        payload?.error?.code ?? "INTERNAL_ERROR",
+        payload?.error?.message ?? "Something went wrong on our side.",
+        response.status,
+        payload?.error?.details,
+        payload?.meta?.requestId,
+      ),
+      options.method,
+      url,
     );
   }
 

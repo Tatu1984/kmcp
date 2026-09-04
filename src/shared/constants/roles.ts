@@ -30,7 +30,19 @@ export const ROLE_DESCRIPTIONS: Record<Role, string> = {
   CITIZEN: "Own profile, vehicles, sessions, payments, receipts and passes.",
 };
 
-/** Every permission the RBAC matrix can grant. Grouped for the settings screen. */
+/**
+ * Every permission the RBAC matrix can grant, grouped for the settings screen.
+ *
+ * ⚠ The grouping and the labels here are **not** the authority on themselves.
+ * `GET /rbac/matrix` serves `groups` from `src/common/rbac/permissions.ts`,
+ * which sits beside the grants the guards actually read, and the settings
+ * matrix renders the API's copy whenever there is one — this list is only what
+ * it falls back to in demo mode. A label edited here and not there changes what
+ * a laptop walkthrough says and nothing about what a deployment enforces.
+ *
+ * What *is* load-bearing is the set of keys, because `PermissionKey` is derived
+ * from it. See `ALL_PERMISSIONS` below.
+ */
 export const PERMISSION_GROUPS = [
   {
     key: "operations",
@@ -93,3 +105,15 @@ export const PERMISSION_GROUPS = [
 
 export type PermissionKey =
   (typeof PERMISSION_GROUPS)[number]["permissions"][number]["key"];
+
+/**
+ * Every permission key, flattened.
+ *
+ * The grouping above is display metadata for the settings matrix and is also
+ * served by `GET /rbac/matrix`, which is the authority on it. This flat list is
+ * the portal's own compile-time contract: it is what makes `can("zone.wrte")` a
+ * type error rather than a control that silently never renders.
+ */
+export const ALL_PERMISSIONS: readonly PermissionKey[] = PERMISSION_GROUPS.flatMap((group) =>
+  group.permissions.map((permission) => permission.key),
+);

@@ -51,3 +51,8 @@ export function daysAgo(days: number): string {
 export function daysAhead(days: number): string {
   return new Date(NOW.getTime() + days * 86_400_000).toISOString();
 }
+
+/** Hours ahead of NOW. A schedule's next run is a matter of hours, not days. */
+export function hoursAhead(hours: number): string {
+  return new Date(NOW.getTime() + hours * 3_600_000).toISOString();
+}

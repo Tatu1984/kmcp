@@ -35,17 +35,39 @@ import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StatCard } from "@/frontend/components/shared/stat-card";
 import { DataTable } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
+import { Can } from "@/frontend/components/shared/can";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, Plate, SectionCard, SplitMeter } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { PAYMENTS, DASHBOARD } from "@/frontend/lib/mock";
-import { paymentsApi, zonesApi, vendorsApi, listAll } from "@/frontend/api";
+import {
+  paymentsApi,
+  zonesApi,
+  vendorsApi,
+  documentsApi,
+  listAll,
+  messagingApi,
+  channelLabel,
+  ApiError,
+} from "@/frontend/api";
+import type { ApiReceipt, MessageChannel } from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
+import { useDocument } from "@/frontend/hooks/use-document";
+import { useMessaging } from "@/frontend/hooks/use-messaging";
+import { isLiveApi } from "@/config/env";
 import { toPayment } from "@/frontend/lib/adapters";
+import { downloadCsv } from "@/frontend/lib/csv";
 import { formatDateTime, formatMoney } from "@/shared/utils/common.util";
 import { PAYMENT_MODE_LABELS } from "@/config/app.config";
 import { cn } from "@/lib/utils";
 import type { Payment } from "@/shared/types/domain.types";
+
+/** One list, so the row menu and the bulk bar cannot come to disagree. */
+const RECEIPT_CHANNELS: { channel: MessageChannel; label: string }[] = [
+  { channel: "SMS", label: "By SMS" },
+  { channel: "WHATSAPP", label: "By WhatsApp" },
+  { channel: "EMAIL", label: "By email" },
+];
 
 export function PaymentsView() {
   const {
@@ -88,6 +110,26 @@ export function PaymentsView() {
     paymentsApi.summary().then((r) => r.data),
   );
 
+  const { send } = useMessaging();
+
+  /**
+   * Re-sends a receipt over the chosen channels.
+   *
+   * Wrapped in `useCallback` because the column definitions memoise on it; the
+   * refunding and receipt-viewing helpers on this screen are memoised for the
+   * same reason.
+   */
+  const resendReceipt = React.useCallback(
+    (paymentIds: string[], channels: MessageChannel[], subject: string) =>
+      void send(() => messagingApi.sendReceipts({ paymentIds, channels }), {
+        success:
+          paymentIds.length === 1 ? "Receipt re-sent" : `Receipts re-sent for ${paymentIds.length} payments`,
+        description: `${subject} · by ${channels.map(channelLabel).join(" and ")}`,
+      }),
+    [send],
+  );
+
+  const documents = useDocument();
   const [selected, setSelected] = React.useState<Payment | null>(null);
   const [refundOpen, setRefundOpen] = React.useState(false);
   const [refundType, setRefundType] = React.useState<"full" | "partial">("full");
@@ -101,6 +143,41 @@ export function PaymentsView() {
     setRefundReason("");
     setRefundOpen(true);
   };
+
+  const [receiptOpen, setReceiptOpen] = React.useState(false);
+  const [receiptFor, setReceiptFor] = React.useState<Payment | null>(null);
+  const [receipt, setReceipt] = React.useState<ApiReceipt | null>(null);
+  const [receiptError, setReceiptError] = React.useState<string | null>(null);
+
+  /**
+   * Shows the receipt the API holds against a payment.
+   *
+   * `POST /payments/:id/receipt` reads like a write and mostly is not: the
+   * service returns the receipt already issued and only mints one when there
+   * is none, because a receipt number appearing twice is an audit finding. So
+   * viewing is safe — it cannot produce a second number — and this is the only
+   * endpoint that will tell us the GST invoice number and the channels the
+   * receipt was sent on.
+   *
+   * What it does not return is a document. There is no PDF anywhere in the
+   * platform yet, so this shows the receipt's particulars rather than
+   * pretending to open a file.
+   */
+  const viewReceipt = React.useCallback(async (payment: Payment) => {
+    setReceiptFor(payment);
+    setReceipt(null);
+    setReceiptError(null);
+    setReceiptOpen(true);
+    if (!isLiveApi) return;
+    try {
+      const { data } = await paymentsApi.receipt(payment.id);
+      setReceipt(data);
+    } catch (error) {
+      setReceiptError(
+        error instanceof ApiError ? error.message : "That receipt could not be loaded.",
+      );
+    }
+  }, []);
 
   const columns = React.useMemo<ColumnDef<Payment, unknown>[]>(
     () => [
@@ -210,30 +287,58 @@ export function PaymentsView() {
                     label: "View receipt",
                     icon: Eye,
                     hidden: !payment.receiptNumber,
-                    onSelect: () =>
-                      toast.info("Opening receipt", { description: payment.receiptNumber }),
+                    // POST /payments/:id/receipt — payments.controller.ts:121,
+                    // guarded by payment.read because it fetches far more often
+                    // than it issues.
+                    permission: "payment.read",
+                    onSelect: () => void viewReceipt(payment),
                   },
                   {
                     label: "Download receipt",
                     icon: Download,
                     hidden: !payment.receiptNumber,
-                    onSelect: () =>
-                      toast.success("Receipt downloaded", { description: `${payment.receiptNumber}.pdf` }),
+                    // GET /documents/receipts/:paymentId — documents.controller.ts,
+                    // on payment.read like the receipt route beside it. The API
+                    // renders it from the stored fare, so a receipt reprinted
+                    // after a tariff change still says what was charged.
+                    permission: "payment.read",
+                    onSelect: () => {
+                      void documents.run(
+                        payment.id,
+                        () => documentsApi.receipt(payment.id),
+                        {
+                          demo: () =>
+                            toast.info("No printable receipt yet", {
+                              description: `${payment.receiptNumber} exists in the ledger, but nothing renders it as a document yet. Open it to read its particulars.`,
+                            }),
+                          success: "Receipt downloaded",
+                          description: payment.receiptNumber ?? undefined,
+                        },
+                      );
+                    },
                   },
                   {
                     label: "Re-send receipt",
                     icon: Send,
                     hidden: !payment.receiptNumber,
-                    children: [
-                      { label: "By SMS", onSelect: () => toast.success("Receipt sent by SMS") },
-                      { label: "By WhatsApp", onSelect: () => toast.success("Receipt sent on WhatsApp") },
-                      { label: "By email", onSelect: () => toast.success("Receipt emailed") },
-                    ],
+                    // POST /messaging/receipts — messaging.controller.ts, on
+                    // payment.read, the same grant the receipt route carries.
+                    // A successful send appends the channel to the receipt's
+                    // own `sentChannels`, so the ledger and the delivery log
+                    // do not drift into two versions of the truth.
+                    permission: "payment.read",
+                    children: RECEIPT_CHANNELS.map(({ channel, label }) => ({
+                      label,
+                      permission: "payment.read" as const,
+                      onSelect: () => resendReceipt([payment.id], [channel], payment.receiptNumber ?? payment.id),
+                    })),
                   },
                   {
                     label: "Issue receipt",
                     icon: Receipt,
                     hidden: Boolean(payment.receiptNumber) || payment.status !== "CAPTURED",
+                    // POST /payments/:id/receipt — payments.controller.ts:121.
+                    permission: "payment.read",
                     onSelect: () => {
                       void apply(
                         () => paymentsApi.receipt(payment.id),
@@ -247,6 +352,8 @@ export function PaymentsView() {
                     icon: Copy,
                     hidden: !payment.gatewayPaymentId,
                     separatorBefore: true,
+                    // Copies what is already on the row. Nothing is called, so
+                    // there is no permission to mirror.
                     onSelect: () => {
                       void navigator.clipboard.writeText(payment.gatewayPaymentId!);
                       toast.success("Copied", { description: payment.gatewayPaymentId });
@@ -256,6 +363,9 @@ export function PaymentsView() {
                     label: "Retry capture",
                     icon: RotateCcw,
                     hidden: payment.status !== "FAILED",
+                    // Payment-gateway scope. A retry means a fresh Razorpay
+                    // order and a link sent to the citizen; neither the order
+                    // nor the link has an endpoint behind it here.
                     onSelect: () =>
                       toast.info("Retry requested", {
                         description: "A fresh payment link has been sent to the citizen.",
@@ -267,6 +377,8 @@ export function PaymentsView() {
                     destructive: true,
                     hidden: !refundable,
                     separatorBefore: true,
+                    // POST /payments/:id/refund — payments.controller.ts:103.
+                    permission: "payment.refund",
                     onSelect: () => openRefund(payment),
                   },
                 ]}
@@ -276,7 +388,7 @@ export function PaymentsView() {
         },
       },
     ],
-    [apply],
+    [apply, viewReceipt, resendReceipt, documents],
   );
 
   const captured = payments.filter((p) => p.status === "CAPTURED");
@@ -374,28 +486,53 @@ export function PaymentsView() {
             options: facetOptions("zoneName"),
           },
         ]}
-        onExport={(rows) =>
-          toast.success("Export queued", {
-            description: `${rows.length} payments · reconciliation file will be emailed.`,
-          })
-        }
+        // Waits on the reports module, which is what builds a file and emails
+        // it. The rows are all in the browser already, but a reconciliation
+        // export is a document the authority keeps, not a client-side dump.
+        onExport={(rows, columns) => {
+          const file = downloadCsv("payments", rows, columns);
+          toast.success("Export ready", { description: `${rows.length} payments · ${file}` });
+        }}
         bulkActions={(rows, clear) => (
           <>
+            {/**
+              * One request for the whole selection, and the toast reports the
+              * server's count of what actually left rather than the number of
+              * rows that were ticked. Only rows that already have a receipt
+              * number: there is no document to re-send for the others, and the
+              * API would refuse them one at a time anyway.
+              */}
+            <Can permission="payment.read">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7"
+                onClick={() => {
+                  const withReceipts = rows.filter((p) => p.receiptNumber);
+                  if (withReceipts.length === 0) {
+                    toast.error("Nothing to send", {
+                      description: "None of the selected payments has a receipt yet.",
+                    });
+                    return;
+                  }
+                  resendReceipt(
+                    withReceipts.map((p) => p.id),
+                    ["SMS", "EMAIL"],
+                    `${withReceipts.length} payments`,
+                  );
+                  clear();
+                }}
+              >
+                <Send className="size-3.5" /> Re-send receipts
+              </Button>
+            </Can>
             <Button
               size="sm"
               variant="outline"
               className="h-7"
-              onClick={() => {
-                toast.success(`Receipts re-sent for ${rows.length} payments`);
-                clear();
-              }}
-            >
-              <Send className="size-3.5" /> Re-send receipts
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7"
+              // Payment-gateway scope: reconciling means matching these rows
+              // against a Razorpay settlement statement, which nothing here
+              // fetches. The webhook is what keeps the two in step meanwhile.
               onClick={() => {
                 toast.success("Reconciliation file generated", {
                   description: `${rows.length} payments matched against the gateway statement.`,
@@ -533,6 +670,83 @@ export function PaymentsView() {
             >
               Refund {formatMoney(refundValue)}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ----------------------------------------------------------- receipt */}
+      <Dialog open={receiptOpen} onOpenChange={setReceiptOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Receipt</DialogTitle>
+            <DialogDescription>
+              {receiptFor?.plateNumber} · {formatMoney(receiptFor?.amount)} collected via{" "}
+              {receiptFor ? PAYMENT_MODE_LABELS[receiptFor.mode] : ""}.
+            </DialogDescription>
+          </DialogHeader>
+
+          {receiptError ? (
+            <p className="text-sm text-destructive">{receiptError}</p>
+          ) : (
+            <dl className="divide-y divide-border/60 text-sm">
+              <div className="flex items-baseline justify-between py-2">
+                <dt className="text-muted-foreground">Receipt number</dt>
+                <dd className="font-mono text-xs">
+                  {receipt?.number ?? receiptFor?.receiptNumber ?? "—"}
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between py-2">
+                <dt className="text-muted-foreground">GST invoice</dt>
+                <dd className="font-mono text-xs">{receipt?.gstInvoiceNo ?? "—"}</dd>
+              </div>
+              <div className="flex items-baseline justify-between py-2">
+                <dt className="text-muted-foreground">Issued</dt>
+                <dd>{receipt ? formatDateTime(receipt.issuedAt) : "—"}</dd>
+              </div>
+              <div className="flex items-baseline justify-between py-2">
+                <dt className="text-muted-foreground">Sent on</dt>
+                <dd>
+                  {receipt?.sentChannels.length
+                    ? receipt.sentChannels.join(", ").toLowerCase()
+                    : "Not sent to the citizen"}
+                </dd>
+              </div>
+            </dl>
+          )}
+
+          <p className="text-xs text-muted-foreground text-pretty">
+            The number is allocated once and never re-issued — the same payment asked twice returns
+            the same receipt, and the PDF is rendered once and kept, so the document a citizen was
+            given is the document that comes back.
+          </p>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReceiptOpen(false)}>
+              Close
+            </Button>
+            {/* GET /documents/receipts/:paymentId — documents.controller.ts. */}
+            {receiptFor && (
+              <Button
+                disabled={documents.isBusy}
+                onClick={() => {
+                  void documents.run(
+                    receiptFor.id,
+                    () => documentsApi.receipt(receiptFor.id),
+                    {
+                      demo: () =>
+                        toast.info("No printable receipt yet", {
+                          description:
+                            "The demo build has no API behind it to render one.",
+                        }),
+                      success: "Receipt downloaded",
+                      description: receipt?.number ?? receiptFor.receiptNumber ?? undefined,
+                    },
+                  );
+                }}
+              >
+                <Download className="size-4" /> Download PDF
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

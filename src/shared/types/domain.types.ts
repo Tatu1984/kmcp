@@ -341,7 +341,15 @@ export interface Citizen {
   status: UserStatus;
   hasActivePass: boolean;
   joinedAt: string;
-  lastSeenAt: string;
+  /**
+   * Absent when the citizen has never signed in.
+   *
+   * Deliberately optional rather than defaulted: the adapter used to fall back
+   * to the join date, which rendered as activity that never happened — an
+   * account created and never used showed "last active" on the day it was
+   * created. A missing value is the honest answer and the screen says so.
+   */
+  lastSeenAt?: string;
 }
 
 export interface Incident {
@@ -421,6 +429,51 @@ export interface ReportJob {
   createdAt: string;
   completedAt?: string;
   sizeKb?: number;
+}
+
+/** Daily, weekly or monthly. Not a cron expression — see the API's own note. */
+export type ReportFrequency = "DAILY" | "WEEKLY" | "MONTHLY";
+
+/**
+ * A standing instruction to run a report again and again.
+ *
+ * The clock fields are a *local* wall time in `timezone`, not a UTC instant.
+ * That distinction is the whole feature: every timestamp in the platform is UTC
+ * and every screen renders Asia/Kolkata, so a schedule that carried only an
+ * instant would honour "Monday at eight" five and a half hours late. `nextRunAt`
+ * is the instant the intent resolves to and is computed by the API, never here.
+ */
+export interface ReportSchedule {
+  id: string;
+  name: string;
+  /** The catalogue key, e.g. `revenue`. */
+  type: string;
+  /** The catalogue's own label for that key. */
+  label: string;
+  frequency: ReportFrequency;
+  hour: number;
+  minute: number;
+  /** ISO weekday, 1 = Monday … 7 = Sunday. Weekly schedules only. */
+  weekday: number | null;
+  /** 1–31, clamped to the last day of a short month. Monthly schedules only. */
+  dayOfMonth: number | null;
+  timezone: string;
+  /** "Every Monday at 08:00 (Asia/Kolkata)", worded by the API. */
+  cadence: string;
+  zoneId: string | null;
+  vendorId: string | null;
+  /** "The previous 7 days · Alipore Road". */
+  paramsLabel: string;
+  channels: string[];
+  ownerName: string;
+  isActive: boolean;
+  nextRunAt: string;
+  lastRunAt?: string;
+  lastStatus?: ReportStatus;
+  lastError?: string;
+  failureCount: number;
+  /** How many consecutive failures the API allows before it pauses a schedule. */
+  failuresBeforePause: number;
 }
 
 export interface NotificationItem {

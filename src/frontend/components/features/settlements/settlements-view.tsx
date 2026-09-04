@@ -10,6 +10,7 @@ import {
   Coins,
   Download,
   Eye,
+  FileSpreadsheet,
   Landmark,
   Play,
   RefreshCw,
@@ -36,16 +37,20 @@ import {
 } from "@/frontend/components/ui/select";
 import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StatCard } from "@/frontend/components/shared/stat-card";
-import { DataTable } from "@/frontend/components/shared/data-table";
+import { DataTable, facetOptionsFrom } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
+import { Can } from "@/frontend/components/shared/can";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SETTLEMENTS, VENDORS } from "@/frontend/lib/mock";
-import { settlementsApi, vendorsApi, listAll } from "@/frontend/api";
+import { settlementsApi, vendorsApi, documentsApi, listAll, ApiError } from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
+import { useDocument } from "@/frontend/hooks/use-document";
+import { isLiveApi } from "@/config/env";
 import { toSettlement } from "@/frontend/lib/adapters";
+import { downloadCsv } from "@/frontend/lib/csv";
 import { ROUTES } from "@/shared/constants/routes";
 import { formatDate, formatMoney } from "@/shared/utils/common.util";
 import { SETTLEMENT_CYCLES } from "@/config/app.config";
@@ -82,6 +87,8 @@ export function SettlementsView() {
     listAll((page, pageSize) => vendorsApi.list({ page, pageSize, status: "APPROVED" })),
   );
 
+  const documents = useDocument();
+
   const [selected, setSelected] = React.useState<Settlement | null>(null);
   const [approveOpen, setApproveOpen] = React.useState(false);
   const [rejectOpen, setRejectOpen] = React.useState(false);
@@ -103,6 +110,66 @@ export function SettlementsView() {
         orgName: v.orgName,
       })),
     [vendors.data],
+  );
+
+  /**
+   * The name of the vendor the URL narrowed the list to.
+   *
+   * The approved roster the run dialog already fetched answers this on a live
+   * deployment, and any settlement in view names its own vendor when the
+   * roster does not — a vendor can be suspended and still be owed money. The
+   * demo roster is consulted only when there is no backend, where it holds
+   * every vendor including the ones still awaiting approval.
+   */
+  const vendorFilterName = React.useMemo(() => {
+    if (!vendorFilter) return undefined;
+    if (!isLiveApi) return VENDORS.find((v) => v.id === vendorFilter)?.orgName;
+    return (
+      runVendors.find((v) => v.id === vendorFilter)?.orgName ??
+      data.find((s) => s.vendorId === vendorFilter)?.vendorName
+    );
+  }, [vendorFilter, runVendors, data]);
+
+  /**
+   * Writes one settlement's payment lines out as a CSV.
+   *
+   * The list row does not carry them — a page of settlements dragging every
+   * payment along with it would be enormous — so the detail is fetched first.
+   * In demo mode the bundled settlement has no lines either, and saying so is
+   * better than handing over a file with a header row and nothing under it.
+   */
+  const exportLines = React.useCallback(
+    async (settlement: Settlement): Promise<void> => {
+      if (!isLiveApi) {
+        toast.info("No payment lines in the demo build", {
+          description: `${settlement.reference} has figures but no per-payment detail behind it.`,
+        });
+        return;
+      }
+
+      try {
+        const { data } = await settlementsApi.get(settlement.id);
+        const file = downloadCsv(`${settlement.reference}-lines`, data.lines, [
+          { header: "Paid at", value: (line) => line.payment?.paidAt ?? "" },
+          { header: "Session", value: (line) => line.payment?.session?.code ?? "" },
+          { header: "Vehicle", value: (line) => line.payment?.session?.plateNumber ?? "" },
+          { header: "Method", value: (line) => line.payment?.mode ?? "" },
+          { header: "Payment id", value: (line) => line.payment?.id ?? "" },
+          // Rupees, not paise: this file is opened in a spreadsheet by a person,
+          // and the two-decimal string is what they expect to sum.
+          { header: "Amount (INR)", value: (line) => (line.amount / 100).toFixed(2) },
+          { header: "Commission (INR)", value: (line) => (line.commission / 100).toFixed(2) },
+        ]);
+        toast.success("Payment lines exported", {
+          description: `${data.lines.length} payments · ${file}`,
+        });
+      } catch (error) {
+        toast.error(
+          error instanceof ApiError ? error.message : "The payment lines could not be fetched.",
+        );
+      }
+    },
+    [],
   );
 
   /** Runs one of the workflow steps and refreshes the list. */
@@ -200,21 +267,53 @@ export function SettlementsView() {
                     label: "View settlement",
                     icon: Eye,
                     shortcut: "↵",
+                    // GET /settlements/:id — settlements.controller.ts:49.
+                    permission: "settlement.read",
                     onSelect: () => router.push(ROUTES.settlement(settlement.id)),
                   },
                   {
-                    label: "Download statement",
+                    label: "PDF statement",
                     icon: Download,
-                    children: [
-                      { label: "PDF statement", onSelect: () => toast.success("PDF statement downloaded") },
-                      { label: "Excel workbook", onSelect: () => toast.success("Excel workbook downloaded") },
-                    ],
+                    // GET /documents/settlements/:id — documents.controller.ts.
+                    // Guarded on settlement.read, the same grant the detail
+                    // route takes: reading the paperwork is not signing it off.
+                    //
+                    permission: "settlement.read",
+                    disabled: documents.pending === settlement.id,
+                    onSelect: () => {
+                      void documents.run(
+                        settlement.id,
+                        () => documentsApi.settlement(settlement.id),
+                        {
+                          demo: () => toast.success("PDF statement downloaded"),
+                          success: "Statement downloaded",
+                          description: `${settlement.reference}.pdf`,
+                        },
+                      );
+                    },
+                  },
+                  {
+                    // This was "Excel workbook", and produced a toast. It is a
+                    // CSV now and says so: writing an XLSX encoder for one menu
+                    // item would be a week of work to make a file that opens in
+                    // the same spreadsheet. What it exports is the settlement's
+                    // payment lines rather than the settlement row — the row is
+                    // already in the table export above, and the lines are what
+                    // somebody reconciling actually needs.
+                    label: "Payment lines (CSV)",
+                    icon: FileSpreadsheet,
+                    // GET /settlements/:id — settlements.controller.ts:49.
+                    permission: "settlement.read",
+                    onSelect: () => void exportLines(settlement),
                   },
                   {
                     label: "Approve",
                     icon: BadgeCheck,
                     hidden: settlement.status !== "PENDING_APPROVAL",
                     separatorBefore: true,
+                    // POST /settlements/:id/approve — settlements.controller.ts:85.
+                    // This is the money decision: it posts the ledger entries.
+                    permission: "settlement.approve",
                     onSelect: () => {
                       setSelected(settlement);
                       setApproveOpen(true);
@@ -224,6 +323,12 @@ export function SettlementsView() {
                     label: "Instruct payout",
                     icon: Landmark,
                     hidden: settlement.status !== "APPROVED",
+                    // POST /settlements/:id/payout — settlements.controller.ts:113.
+                    // Deliberately a third permission, not the approver's: the
+                    // officer who says the figures are right and the officer who
+                    // records that the bank has paid are not meant to be the
+                    // same person.
+                    permission: "settlement.payout",
                     onSelect: () => {
                       setSelected(settlement);
                       setPayoutOpen(true);
@@ -233,6 +338,8 @@ export function SettlementsView() {
                     label: "Record payout again",
                     icon: RefreshCw,
                     hidden: settlement.status !== "FAILED",
+                    // POST /settlements/:id/payout — settlements.controller.ts:113.
+                    permission: "settlement.payout",
                     onSelect: () => {
                       setSelected(settlement);
                       setPayoutOpen(true);
@@ -242,6 +349,11 @@ export function SettlementsView() {
                     label: "Send for approval",
                     icon: Play,
                     hidden: settlement.status !== "DRAFT",
+                    // POST /settlements/:id/submit — settlements.controller.ts:73,
+                    // guarded by settlement.read: putting a draft in front of an
+                    // approver decides nothing, and whoever prepares the run has
+                    // to be able to hand it on.
+                    permission: "settlement.read",
                     onSelect: () => {
                       void step(
                         settlement,
@@ -257,6 +369,10 @@ export function SettlementsView() {
                     destructive: true,
                     hidden: settlement.status !== "PENDING_APPROVAL",
                     separatorBefore: true,
+                    // POST /settlements/:id/reject — settlements.controller.ts:100.
+                    // Rejecting is the approver's other answer, and carries the
+                    // same permission as approving.
+                    permission: "settlement.approve",
                     onSelect: () => {
                       setSelected(settlement);
                       setRejectOpen(true);
@@ -269,7 +385,7 @@ export function SettlementsView() {
         },
       },
     ],
-    [router, step],
+    [router, step, documents, exportLines],
   );
 
   const pending = data.filter((s) => s.status === "PENDING_APPROVAL");
@@ -284,15 +400,21 @@ export function SettlementsView() {
         description="Vendor payouts and the municipal share. Every settlement is backed by a line per payment and a balanced double-entry ledger."
         meta={
           vendorFilter ? (
-            <Badge variant="secondary">
-              {VENDORS.find((v) => v.id === vendorFilter)?.orgName}
-            </Badge>
+            <Badge variant="secondary">{vendorFilterName ?? "One vendor"}</Badge>
           ) : undefined
         }
         actions={
-          <Button size="sm" className="h-9" onClick={() => setRunOpen(true)}>
-            <Play className="size-4" /> Run settlement
-          </Button>
+          /**
+           * POST /settlements/generate — settlements.controller.ts:56, guarded
+           * by `settlement.read`. Generating only gathers payments nobody has
+           * claimed into a draft; nothing is decided and nothing is paid until
+           * an approver acts, which is why it does not need their permission.
+           */
+          <Can permission="settlement.read">
+            <Button size="sm" className="h-9" onClick={() => setRunOpen(true)}>
+              <Play className="size-4" /> Run settlement
+            </Button>
+          </Can>
         }
       />
 
@@ -345,57 +467,74 @@ export function SettlementsView() {
           {
             columnId: "vendorName",
             label: "Vendor",
-            options: VENDORS.map((v) => ({ value: v.orgName, label: v.orgName })),
+            /**
+             * The vendors that appear in this column. The demo roster names
+             * operators a live deployment has never settled with, so every
+             * option it offers filters the table to nothing; the approved
+             * roster beside it is no better here, since a suspended vendor
+             * still shows up in settlements already raised.
+             */
+            options: isLiveApi
+              ? facetOptionsFrom(data, (s) => s.vendorName)
+              : VENDORS.map((v) => ({ value: v.orgName, label: v.orgName })),
           },
         ]}
         onRowClick={(settlement) => router.push(ROUTES.settlement(settlement.id))}
-        onExport={(rows) => toast.success("Export queued", { description: `${rows.length} settlements` })}
+        onExport={(rows, columns) => {
+          const file = downloadCsv("settlements", rows, columns);
+          toast.success("Export ready", { description: `${rows.length} settlements · ${file}` });
+        }}
         bulkActions={(rows, clear) => (
           <>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7"
-              onClick={() => {
-                const eligible = rows.filter((r) => r.status === "PENDING_APPROVAL");
-                if (eligible.length === 0) {
-                  toast.info("Nothing to approve", {
-                    description: "Only settlements awaiting approval can be approved.",
-                  });
+            {/* POST /settlements/:id/approve — settlements.controller.ts:85. */}
+            <Can permission="settlement.approve">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7"
+                onClick={() => {
+                  const eligible = rows.filter((r) => r.status === "PENDING_APPROVAL");
+                  if (eligible.length === 0) {
+                    toast.info("Nothing to approve", {
+                      description: "Only settlements awaiting approval can be approved.",
+                    });
+                    return;
+                  }
+                  void apply(
+                    // One at a time: each approval posts its own ledger entries
+                    // under a named approver, and a batch that half-succeeds must
+                    // leave the successful half properly posted.
+                    async () => {
+                      for (const settlement of eligible) await settlementsApi.approve(settlement.id);
+                    },
+                    (list) =>
+                      list.map((s) =>
+                        eligible.some((r) => r.id === s.id)
+                          ? { ...s, status: "APPROVED" as const, approvedAt: new Date().toISOString() }
+                          : s,
+                      ),
+                    {
+                      success: `${eligible.length} settlements approved`,
+                      description:
+                        eligible.length < rows.length
+                          ? `${rows.length - eligible.length} were skipped — only pending settlements can be approved.`
+                          : undefined,
+                    },
+                  )
+                    .then(clear)
+                    .catch(() => {});
                   return;
-                }
-                void apply(
-                  // One at a time: each approval posts its own ledger entries
-                  // under a named approver, and a batch that half-succeeds must
-                  // leave the successful half properly posted.
-                  async () => {
-                    for (const settlement of eligible) await settlementsApi.approve(settlement.id);
-                  },
-                  (list) =>
-                    list.map((s) =>
-                      eligible.some((r) => r.id === s.id)
-                        ? { ...s, status: "APPROVED" as const, approvedAt: new Date().toISOString() }
-                        : s,
-                    ),
-                  {
-                    success: `${eligible.length} settlements approved`,
-                    description:
-                      eligible.length < rows.length
-                        ? `${rows.length - eligible.length} were skipped — only pending settlements can be approved.`
-                        : undefined,
-                  },
-                )
-                  .then(clear)
-                  .catch(() => {});
-                return;
-              }}
-            >
-              <BadgeCheck className="size-3.5" /> Approve selected
-            </Button>
+                }}
+              >
+                <BadgeCheck className="size-3.5" /> Approve selected
+              </Button>
+            </Can>
             <Button
               size="sm"
               variant="outline"
               className="h-7"
+              // Waits on the PDF module for the statement and the messaging
+              // module to send it. Neither exists, so nothing is called.
               onClick={() => {
                 toast.success(`Statements emailed for ${rows.length} settlements`);
                 clear();

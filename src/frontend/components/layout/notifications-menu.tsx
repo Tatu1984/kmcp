@@ -24,9 +24,40 @@ import {
 } from "@/frontend/components/ui/popover";
 import { AnimatedList, AnimatedListItem } from "@/frontend/components/reactbits";
 import { EmptyState } from "@/frontend/components/shared/empty-state";
+import { Skeleton } from "@/frontend/components/ui/skeleton";
 import { NOTIFICATIONS } from "@/frontend/lib/mock";
+import { isLiveApi } from "@/config/env";
+import { notificationsApi, type ApiNotification } from "@/frontend/api";
+import { useApiQuery } from "@/frontend/hooks/use-api";
 import { relativeTime } from "@/shared/utils/common.util";
 import type { NotificationItem } from "@/shared/types/domain.types";
+
+/**
+ * How urgent an alert looks, inferred from its template name.
+ *
+ * The API stores a template and a payload rather than a severity, because
+ * severity is a presentation decision and the same alert is a red banner in the
+ * portal and a plain line of text in an SMS. Deriving it here keeps that
+ * decision on the side that renders it.
+ */
+function kindOf(template: string): NotificationItem["kind"] {
+  if (/variance|overstay|incident|failed|reject/.test(template)) return "alert";
+  if (/pending|approval|application|capacity|expiring/.test(template)) return "warning";
+  if (/published|ready|approved|paid|complete/.test(template)) return "success";
+  return "info";
+}
+
+function toItem(row: ApiNotification): NotificationItem {
+  return {
+    id: row.id,
+    title: row.title,
+    body: row.body ?? "",
+    kind: kindOf(row.template),
+    href: row.href,
+    createdAt: row.createdAt,
+    read: row.read,
+  };
+}
 
 const KIND_ICON = {
   alert: AlertTriangle,
@@ -43,24 +74,87 @@ const KIND_CLASS = {
 } as const;
 
 export function NotificationsMenu() {
-  const [items, setItems] = React.useState<NotificationItem[]>(NOTIFICATIONS);
   const [open, setOpen] = React.useState(false);
-  const unread = items.filter((n) => !n.read).length;
+
+  /**
+   * The badge is its own request, and a much cheaper one than the list.
+   *
+   * The bell sits on every screen, so the count refreshes on an interval while
+   * the full list is only fetched when the menu is actually opened.
+   */
+  const count = useApiQuery(
+    ["notifications", "unread-count"],
+    () => notificationsApi.unreadCount().then((r) => r.data.unread),
+    { refetchInterval: 60_000, staleTime: 30_000 },
+  );
+
+  const feed = useApiQuery(
+    ["notifications", "list"],
+    () => notificationsApi.list({ pageSize: 25 }).then((r) => r.data.map(toItem)),
+    { enabled: open },
+  );
+
+  // Demo mode keeps its own copy so the walkthrough can mark and dismiss.
+  const [demo, setDemo] = React.useState<NotificationItem[]>(NOTIFICATIONS);
+  const items = isLiveApi ? (feed.data ?? []) : demo;
+  const unread = isLiveApi ? (count.data ?? 0) : demo.filter((n) => !n.read).length;
+  const isLoading = isLiveApi && open && feed.isLoading;
+
+  /** Refresh both the list and the badge after a write. */
+  const reload = React.useCallback(() => {
+    void feed.refetch();
+    void count.refetch();
+  }, [feed, count]);
 
   const markAll = () => {
-    setItems((list) => list.map((n) => ({ ...n, read: true })));
-    toast.success("All notifications marked as read");
+    if (!isLiveApi) {
+      setDemo((list) => list.map((n) => ({ ...n, read: true })));
+      toast.success("All notifications marked as read");
+      return;
+    }
+    notificationsApi
+      .markAllRead()
+      .then(() => {
+        reload();
+        toast.success("All notifications marked as read");
+      })
+      .catch(() => toast.error("Those could not be marked as read. Please try again."));
   };
 
-  const markOne = (id: string) => setItems((list) => list.map((n) => (n.id === id ? { ...n, read: true } : n)));
+  const markOne = (id: string) => {
+    if (!isLiveApi) {
+      setDemo((list) => list.map((n) => (n.id === id ? { ...n, read: true } : n)));
+      return;
+    }
+    // Fire and forget: the row is being navigated away from, and a failed
+    // mark-as-read is not worth interrupting that with a toast.
+    notificationsApi.markRead(id).then(reload).catch(() => undefined);
+  };
 
   const dismiss = (id: string) => {
     const item = items.find((n) => n.id === id);
-    setItems((list) => list.filter((n) => n.id !== id));
-    toast("Notification dismissed", {
-      description: item?.title,
-      action: { label: "Undo", onClick: () => setItems(NOTIFICATIONS) },
-    });
+
+    if (!isLiveApi) {
+      setDemo((list) => list.filter((n) => n.id !== id));
+      toast("Notification dismissed", {
+        description: item?.title,
+        action: { label: "Undo", onClick: () => setDemo(NOTIFICATIONS) },
+      });
+      return;
+    }
+
+    /**
+     * No undo on the live path. Dismissing deletes the row server-side, so an
+     * "Undo" button here could only re-render something that no longer exists —
+     * which is exactly the kind of control this pass is removing, not adding.
+     */
+    notificationsApi
+      .dismiss(id)
+      .then(() => {
+        reload();
+        toast("Notification dismissed", { description: item?.title });
+      })
+      .catch(() => toast.error("That could not be dismissed. Please try again."));
   };
 
   return (
@@ -115,7 +209,19 @@ export function NotificationsMenu() {
         <Separator />
 
         <ScrollArea className="h-[22rem]">
-          {items.length === 0 ? (
+          {isLoading ? (
+            <div className="space-y-3 p-3">
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="flex gap-3">
+                  <Skeleton className="size-7 shrink-0 rounded-lg" />
+                  <div className="flex-1 space-y-1.5">
+                    <Skeleton className="h-3.5 w-3/4" />
+                    <Skeleton className="h-3 w-full" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : items.length === 0 ? (
             <EmptyState
               icon={BellOff}
               title="You are all caught up"

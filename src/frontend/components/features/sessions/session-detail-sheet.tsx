@@ -31,8 +31,15 @@ import {
 } from "@/frontend/components/ui/sheet";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
+import { NOT_PERMITTED } from "@/frontend/components/shared/can";
+import { usePermissions } from "@/frontend/hooks/use-permissions";
 import { Field, Money, Plate, CopyButton } from "@/frontend/components/shared/bits";
 import { ClickSpark } from "@/frontend/components/reactbits";
+import { sessionsApi, paymentsApi, messagingApi, documentsApi, ApiError } from "@/frontend/api";
+import { useApiQuery } from "@/frontend/hooks/use-api";
+import { useDocument } from "@/frontend/hooks/use-document";
+import { useMessaging } from "@/frontend/hooks/use-messaging";
+import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
 import {
   formatDateTime,
@@ -58,11 +65,57 @@ export function SessionDetailSheet({
 }) {
   const [cancelOpen, setCancelOpen] = React.useState(false);
   const [refundOpen, setRefundOpen] = React.useState(false);
+  const { can } = usePermissions();
+  const documents = useDocument();
+  const { send, isSending } = useMessaging();
+
+  /**
+   * A refund is issued against a *payment*, not a session, and the session list
+   * does not carry payments — `GET /sessions` returns the row only, while
+   * `GET /sessions/:id` includes them. So the sheet fetches the session it is
+   * showing to find the captured payment to refund. One request, only while the
+   * sheet is open on a paid session, and never in demo mode.
+   */
+  const detail = useApiQuery(
+    ["session", session?.id ?? "none", "detail"],
+    () => sessionsApi.get(session!.id).then((r) => r.data),
+    { enabled: open && Boolean(session?.id) && Boolean(session?.paid) },
+  );
 
   if (!session) return null;
 
   const live = session.status === "ACTIVE" || session.status === "OVERSTAY";
   const netGross = session.grossAmount ?? 0;
+
+  /**
+   * The payment the money actually came in on. A session can carry a failed
+   * attempt before the one that succeeded, and refunding either of the other
+   * two states is a 4xx — so the button is offered only when there is one to
+   * refund. `PARTIALLY_REFUNDED` still has money left in it and stays eligible.
+   */
+  const refundable = (detail.data?.payments ?? []).find(
+    (p) => p.status === "CAPTURED" || p.status === "PARTIALLY_REFUNDED",
+  );
+  // Demo mode never fetches, so it keeps deciding the way it always has: a
+  // session marked paid can be refunded, and the confirm dialog reports it.
+  const canRefund = can("payment.refund") && (!isLiveApi || Boolean(refundable));
+  // The receipt hangs off the same payment the refund does, so it is offered
+  // on the same condition — with its own permission, since reading a receipt
+  // and handing money back are not the same authority.
+  const canDownloadReceipt = can("payment.read") && (!isLiveApi || Boolean(refundable));
+  const receiptBlockedReason = !can("payment.read")
+    ? NOT_PERMITTED
+    : detail.isLoading
+      ? "Looking up the payment…"
+      : canDownloadReceipt
+        ? undefined
+        : "No captured payment on this session, so there is no receipt.";
+
+  const refundBlockedReason = !can("payment.refund")
+    ? NOT_PERMITTED
+    : detail.isLoading
+      ? "Looking up the payment…"
+      : "No captured payment on this session to refund.";
 
   return (
     <>
@@ -285,6 +338,9 @@ export function SessionDetailSheet({
           <SheetFooter className="gap-2 sm:flex-row sm:flex-wrap">
             {live ? (
               <>
+                {/* Waits on a session-extend endpoint in the sessions module —
+                    extending has to re-quote against the tariff version in
+                    force, which no route does yet. */}
                 <Button
                   variant="outline"
                   className="flex-1"
@@ -297,12 +353,29 @@ export function SessionDetailSheet({
                 >
                   <TimerReset className="size-4" /> Extend
                 </Button>
-                <Button variant="outline" className="flex-1" onClick={() => toast.info("Calling the citizen…", { description: session.citizenPhone ?? "No number on file" })}>
+                {/* Not a messaging-module gap: a browser cannot place a call,
+                    and dialling one needs a telephony bridge the API does not
+                    have. So this hands over the number rather than claiming a
+                    connection — the officer dials it on the desk phone. */}
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  disabled={!session.citizenPhone}
+                  title={session.citizenPhone ? undefined : "No number on file"}
+                  onClick={() => {
+                    if (!session.citizenPhone) return;
+                    void navigator.clipboard.writeText(session.citizenPhone);
+                    toast.success("Number copied", { description: session.citizenPhone });
+                  }}
+                >
                   <Phone className="size-4" /> Call citizen
                 </Button>
+                {/* POST /sessions/:id/cancel — sessions.controller.ts:111 */}
                 <Button
                   variant="outline"
                   className="flex-1 text-destructive hover:text-destructive"
+                  disabled={!can("session.cancel")}
+                  title={can("session.cancel") ? undefined : NOT_PERMITTED}
                   onClick={() => setCancelOpen(true)}
                 >
                   <Ban className="size-4" /> Cancel
@@ -310,15 +383,64 @@ export function SessionDetailSheet({
               </>
             ) : (
               <>
-                <Button variant="outline" className="flex-1" onClick={() => toast.success("Receipt downloaded", { description: `${session.code}.pdf` })}>
+                {/* GET /documents/receipts/:paymentId — documents.controller.ts,
+                    on payment.read like the receipt route beside it. It needs
+                    the payment id, which is why it waits on the same detail
+                    fetch the refund button does. */}
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  disabled={!canDownloadReceipt || documents.isBusy}
+                  title={receiptBlockedReason}
+                  onClick={() => {
+                    void documents.run(
+                      session.id,
+                      () => documentsApi.receipt(refundable?.id ?? ""),
+                      {
+                        demo: () =>
+                          toast.success("Receipt downloaded", {
+                            description: `${session.code}.pdf`,
+                          }),
+                        success: "Receipt downloaded",
+                        description: session.code,
+                      },
+                    );
+                  }}
+                >
                   <Download className="size-4" /> Receipt
                 </Button>
-                <Button variant="outline" className="flex-1" onClick={() => toast.success("Receipt re-sent", { description: "SMS and email dispatched." })}>
+                {/* POST /messaging/receipts — on payment.read, the grant
+                    POST /payments/:id/receipt already carries. SMS and email
+                    together: the two a citizen is most likely to still have
+                    when they need the receipt months later. */}
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  disabled={!can("payment.read") || isSending}
+                  title={can("payment.read") ? undefined : NOT_PERMITTED}
+                  onClick={() =>
+                    void send(
+                      () =>
+                        messagingApi.sendReceipts({
+                          sessionIds: [session.id],
+                          channels: ["SMS", "EMAIL"],
+                        }),
+                      { success: "Receipt re-sent", description: `${session.code} · by SMS and email` },
+                    )
+                  }
+                >
                   <Send className="size-4" /> Re-send
                 </Button>
                 {session.paid && (
                   <ClickSpark>
-                    <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => setRefundOpen(true)}>
+                    {/* POST /payments/:id/refund — payments.controller.ts:103 */}
+                    <Button
+                      variant="outline"
+                      className="text-destructive hover:text-destructive"
+                      disabled={!canRefund}
+                      title={canRefund ? undefined : refundBlockedReason}
+                      onClick={() => setRefundOpen(true)}
+                    >
                       <Receipt className="size-4" /> Refund
                     </Button>
                   </ClickSpark>
@@ -369,10 +491,37 @@ export function SessionDetailSheet({
             </span>
           </span>
         }
-        onConfirm={(reason) => {
-          toast.success("Refund initiated", {
-            description: `${formatMoney(session.payableAmount)} · ${reason}`,
-          });
+        /**
+         * The amount is deliberately not sent: omitting it tells the API to
+         * return everything still refundable on that payment, which is the
+         * server's own figure rather than one this sheet computed from a
+         * session row. A portal that names its own refund amount is a portal
+         * that can refund more than was ever collected.
+         */
+        onConfirm={async (reason) => {
+          if (!isLiveApi) {
+            toast.success("Refund initiated", {
+              description: `${formatMoney(session.payableAmount)} · ${reason}`,
+            });
+            return;
+          }
+          if (!refundable) {
+            toast.error("No captured payment on this session to refund.");
+            return;
+          }
+          try {
+            const { data: payment } = await paymentsApi.refund(refundable.id, {
+              reason: reason ?? "Refunded from the portal",
+            });
+            await detail.refetch();
+            toast.success("Refund initiated", {
+              description: `${formatMoney(payment.refundedAmount)} back to the original payment method.`,
+            });
+          } catch (error) {
+            toast.error(
+              error instanceof ApiError ? error.message : "That refund did not go through.",
+            );
+          }
         }}
       />
     </>

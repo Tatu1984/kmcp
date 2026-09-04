@@ -12,8 +12,35 @@ const PUBLIC_API = [
 ];
 
 /**
- * Edge middleware: request correlation, auth gate and RBAC pre-check.
- * Business rules never live here — only auth, rate limiting and routing concerns.
+ * Edge proxy: request correlation and the authentication gate. Nothing else.
+ *
+ * This comment used to promise an "RBAC pre-check" and there has never been
+ * one. There should not be, either, and it is worth writing down why so the
+ * promise is not made again.
+ *
+ * The only thing the edge knows about a caller is `kmcp_session`, which holds a
+ * lowercased role code — written by `document.cookie` in `frontend/lib/session.ts`,
+ * unsigned, not http-only, and therefore editable by anyone who opens a console
+ * and types. A `/settlements` gate keyed on it would stop nobody who wanted in,
+ * yet would read to every future maintainer as though the route were protected.
+ * That is worse than no gate at all: it invites someone to lean on it.
+ *
+ * Nor could it be made correct if the cookie were trustworthy. Permissions are
+ * role rows the authority edits from the settings screen — grant `settlement.read`
+ * to ZONE_OFFICER at four o'clock and a role-to-permission table compiled into
+ * this bundle would still be bouncing zone officers away from a page the API is
+ * serving them, with nothing in the audit trail to say why.
+ *
+ * So the work is split by what each layer can honestly answer. Here: "is anyone
+ * signed in at all", which the cookie does answer, and where a forged one buys
+ * only an empty dashboard shell whose every request the API refuses. In
+ * `app/(dashboard)/layout.tsx`: "may this account open this page", from the
+ * permissions /auth/me resolved, so a bookmarked /settlements explains itself
+ * instead of flashing a screen full of failed requests. The API is the only
+ * authority over the data either way; both of these are courtesies that save a
+ * wasted click.
+ *
+ * Business rules never live here — only auth and routing concerns.
  */
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;

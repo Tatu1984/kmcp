@@ -18,6 +18,7 @@ import {
   SheetTitle,
 } from "@/frontend/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/frontend/components/ui/tabs";
+import { KycUpload } from "./kyc-upload";
 import type { Vendor } from "@/shared/types/domain.types";
 
 const KYC_DOCS = [
@@ -33,11 +34,14 @@ export function VendorFormSheet({
   onOpenChange,
   vendor,
   onSaved,
+  onDocumentUploaded,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   vendor?: Vendor | null;
   onSaved?: (draft: Partial<Vendor>) => void;
+  /** Called after a KYC document is attached, so the caller can refetch. */
+  onDocumentUploaded?: () => void;
 }) {
   const editing = Boolean(vendor);
   const [busy, setBusy] = React.useState(false);
@@ -234,18 +238,36 @@ export function VendorFormSheet({
                     <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300">
                       Verified
                     </Badge>
+                  ) : vendor ? (
+                    /**
+                     * The real upload: a presigned ticket from POST
+                     * /media/uploads, the bytes PUT straight to object storage,
+                     * a confirm, then POST /vendors/:id/documents with the media
+                     * id. `KycUpload` owns that sequence — this passes it the
+                     * one document type the row is about.
+                     *
+                     * If the storage credentials in this environment are
+                     * placeholders the PUT fails, and it fails visibly: the
+                     * error from storage is what the officer is shown, rather
+                     * than a success toast over a document that was never
+                     * stored.
+                     */
+                    <KycUpload
+                      vendorId={vendor.id}
+                      type={doc.type}
+                      label="Upload"
+                      onUploaded={onDocumentUploaded ?? (() => undefined)}
+                    />
                   ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8"
-                      onClick={() =>
-                        toast.info("Upload document", {
-                          description: `${doc.label} — PDF or JPG, up to 10 MB.`,
-                        })
-                      }
-                    >
-                      Upload
+                    /**
+                     * A document belongs to a vendor, and this one does not
+                     * exist yet — POST /vendors/:id/documents has no id to
+                     * take. Registering first is a real ordering constraint,
+                     * not a limitation of the form, so it is said rather than
+                     * worked around.
+                     */
+                    <Button variant="outline" size="sm" className="h-8" disabled>
+                      Register first
                     </Button>
                   )}
                 </div>

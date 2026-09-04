@@ -5,6 +5,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import {
   Ban,
   Car,
+  Download,
   Eye,
   IdCard,
   Mail,
@@ -33,11 +34,35 @@ import { DataTable } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
+import { Can, NOT_PERMITTED } from "@/frontend/components/shared/can";
+import { usePermissions } from "@/frontend/hooks/use-permissions";
+import { Skeleton } from "@/frontend/components/ui/skeleton";
+import { Input } from "@/frontend/components/ui/input";
+import { Label } from "@/frontend/components/ui/label";
+import { Textarea } from "@/frontend/components/ui/textarea";
+import { Checkbox } from "@/frontend/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/frontend/components/ui/dialog";
 import { Field, Money, PersonCell, Plate } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { CITIZENS, SESSIONS } from "@/frontend/lib/mock";
-import { citizensApi, listAll } from "@/frontend/api";
+import {
+  ApiError,
+  citizensApi,
+  listAll,
+  messagingApi,
+  privacyApi,
+  saveDataExport,
+  type MessageChannel,
+} from "@/frontend/api";
 import { useResource, useApiQuery } from "@/frontend/hooks/use-api";
+import { useMessaging } from "@/frontend/hooks/use-messaging";
 import { toCitizen } from "@/frontend/lib/adapters";
 import { isLiveApi } from "@/config/env";
 import { formatDate, formatMoney, relativeTime } from "@/shared/utils/common.util";
@@ -60,6 +85,15 @@ export function CitizensView() {
   const [selected, setSelected] = React.useState<Citizen | null>(null);
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [blockOpen, setBlockOpen] = React.useState(false);
+
+  /**
+   * Both writes this screen makes — the account status and the plate flag —
+   * sit on `user.manage` in `citizens.controller.ts`. The buttons in the detail
+   * sheet are disabled and explained rather than hidden, so an officer can see
+   * that blocking a plate is possible and simply is not theirs to do.
+   */
+  const { can } = usePermissions();
+  const canManage = can("user.manage");
 
   // The detail sheet needs the vehicles and parking history, which the list
   // does not carry — fetched only once a citizen is actually opened.
@@ -86,6 +120,96 @@ export function CitizensView() {
   const open = (citizen: Citizen) => {
     setSelected(citizen);
     setSheetOpen(true);
+  };
+
+  // ------------------------------------------------------------ data export
+  const [exporting, setExporting] = React.useState<string | null>(null);
+
+  /**
+   * The DPDP right of access, as a file.
+   *
+   * `GET /privacy/citizens/:id/export` assembles the whole package — profile,
+   * vehicles, sessions, payments, receipts, passes, feedback, incidents they
+   * raised, notification deliveries, consent history, and the media ids of
+   * evidence featuring their vehicles — and audits the disclosure against the
+   * officer who asked for it. The download is a blob rather than a link,
+   * because a URL to somebody's entire parking history is not a thing to leave
+   * sitting in a browser history.
+   *
+   * Evidence arrives as media ids and not as pictures. That is the API's
+   * decision and the right one: a signed URL is a bearer credential for the
+   * bytes, and a package of them would still be live in whatever inbox it was
+   * forwarded to.
+   */
+  const exportData = React.useCallback(async (citizen: Citizen) => {
+    if (!isLiveApi) {
+      toast.info("Exporting a citizen's data needs the API", {
+        description: "Set NEXT_PUBLIC_API_URL to assemble a real subject-access package.",
+      });
+      return;
+    }
+    setExporting(citizen.id);
+    try {
+      const { data } = await privacyApi.export(citizen.id);
+      saveDataExport(data, citizen.id);
+      const truncated = Object.values(data.meta?.truncated ?? {}).some(Boolean);
+      toast.success("Data export downloaded", {
+        description: truncated
+          ? `${citizen.name} · some sections were capped; the file says which.`
+          : `${citizen.name} · the disclosure is recorded in the audit trail.`,
+      });
+    } catch (error) {
+      toast.error(
+        error instanceof ApiError ? error.message : "That export could not be assembled.",
+      );
+    } finally {
+      setExporting(null);
+    }
+  }, []);
+
+  // ----------------------------------------------------------- announcements
+  const { send, isSending } = useMessaging();
+  const [announceOpen, setAnnounceOpen] = React.useState(false);
+  const [announceTo, setAnnounceTo] = React.useState<Citizen[]>([]);
+  const [announceTitle, setAnnounceTitle] = React.useState("");
+  const [announceBody, setAnnounceBody] = React.useState("");
+  const [announceChannels, setAnnounceChannels] = React.useState<MessageChannel[]>(["SMS"]);
+  /**
+   * The table's own "clear the selection" callback, held until the send
+   * succeeds. Clearing on the click would drop the recipients out from under a
+   * composer the officer might still cancel.
+   */
+  const [announceClear, setAnnounceClear] = React.useState<() => void>(() => () => {});
+
+  const toggleChannel = (channel: MessageChannel) =>
+    setAnnounceChannels((current) =>
+      current.includes(channel) ? current.filter((c) => c !== channel) : [...current, channel],
+    );
+
+  const canAnnounce =
+    announceTitle.trim().length > 0 && announceBody.trim().length > 0 && announceChannels.length > 0;
+
+  const sendAnnouncement = () => {
+    if (!canAnnounce) return;
+    void send(
+      () =>
+        messagingApi.sendAnnouncement({
+          citizenIds: announceTo.map((c) => c.id),
+          title: announceTitle.trim(),
+          body: announceBody.trim(),
+          channels: announceChannels,
+        }),
+      {
+        success: `Announcement sent to ${announceTo.length} citizens`,
+        description: announceTitle.trim(),
+      },
+    ).then((ok) => {
+      // Left open on failure, with the text still in it: an officer who has
+      // just written two hundred words should not have to write them twice.
+      if (!ok) return;
+      setAnnounceOpen(false);
+      announceClear();
+    });
   };
 
   const columns = React.useMemo<ColumnDef<Citizen, unknown>[]>(
@@ -163,12 +287,30 @@ export function CitizensView() {
                 label={citizen.name}
                 actions={[
                   { label: "View profile", icon: Eye, shortcut: "↵", onSelect: () => open(citizen) },
-                  { label: "Call", icon: Phone, onSelect: () => toast.info("Calling", { description: citizen.phone }) },
+                  {
+                    /**
+                     * These two were never waiting on the backend. `tel:` and
+                     * `mailto:` are what the operating system is for — the
+                     * officer's own dialler and mail client already know how to
+                     * place a call and open a draft, and a toast reading
+                     * "Calling…" only ever described something not happening.
+                     */
+                    label: "Call",
+                    icon: Phone,
+                    disabled: !citizen.phone,
+                    onSelect: () => {
+                      // Spaces and the +91 the register stores are fine in a
+                      // tel: URI, but a dialler is happier without the spaces.
+                      window.location.href = `tel:${citizen.phone.replace(/\s+/g, "")}`;
+                    },
+                  },
                   {
                     label: "Email",
                     icon: Mail,
                     disabled: !citizen.email,
-                    onSelect: () => toast.info("Composing email", { description: citizen.email }),
+                    onSelect: () => {
+                      window.location.href = `mailto:${citizen.email}`;
+                    },
                   },
                   {
                     label: "Parking history",
@@ -177,8 +319,29 @@ export function CitizensView() {
                     onSelect: () => open(citizen),
                   },
                   {
+                    /**
+                     * The subject-access export, from the row rather than only
+                     * from the detail sheet — an officer working through a
+                     * morning's DPDP requests should not have to open each
+                     * person to answer one.
+                     */
+                    label: "Data export (DPDP)",
+                    icon: Download,
+                    permission: "user.manage",
+                    onSelect: () => {
+                      void exportData(citizen);
+                    },
+                  },
+                  {
                     label: citizen.status === "BLACKLISTED" ? "Remove from blacklist" : "Blacklist",
                     icon: citizen.status === "BLACKLISTED" ? UserCheck : Ban,
+                    /**
+                     * `POST /citizens/:id/status` sits on `user.manage`, not on
+                     * anything session-shaped: blacklisting ends someone's
+                     * access to the platform, so the API treats it as account
+                     * administration rather than an operational call.
+                     */
+                    permission: "user.manage",
                     destructive: citizen.status !== "BLACKLISTED",
                     separatorBefore: true,
                     onSelect: () => {
@@ -201,7 +364,7 @@ export function CitizensView() {
         },
       },
     ],
-    [changeStatus],
+    [changeStatus, exportData],
   );
 
   const active = citizens.filter((c) => c.status === "ACTIVE").length;
@@ -209,7 +372,21 @@ export function CitizensView() {
   const passHolders = citizens.filter((c) => c.hasActivePass).length;
   const totalSpent = citizens.reduce((s, c) => s + c.totalSpent, 0);
 
-  /** Recent parking for the open citizen — from the API, or the demo set. */
+  /**
+   * Recent parking for the open citizen — from the API, or the demo set.
+   *
+   * The live rows come off the citizen detail endpoint rather than the sessions
+   * list, and deliberately so: a parking session belongs to a *plate*, not to a
+   * person. `/sessions` filters on zone, vendor, attendant, plate and dates, and
+   * on nothing that names an owner — so there is no citizen id to pass it. The
+   * detail endpoint joins through `vehicle.ownerUserId`, which is the only real
+   * link between a citizen and the cars they have claimed, and it is why someone
+   * who parked for months before installing the app still sees that history.
+   *
+   * The demo branch below matches on name because the bundled dataset has no
+   * ids to join on. That is fine for a walkthrough and would be wrong against
+   * real data, where two citizens sharing a name would see each other's parking.
+   */
   const citizenSessions = React.useMemo(() => {
     if (!selected) return [];
     if (isLiveApi) {
@@ -289,17 +466,33 @@ export function CitizensView() {
           })
         }
         bulkActions={(rows, clear) => (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7"
-            onClick={() => {
-              toast.success(`Announcement queued for ${rows.length} citizens`);
-              clear();
-            }}
-          >
-            Send announcement
-          </Button>
+          /**
+           * POST /messaging/announcements — on user.manage, the grant every
+           * other write on this screen carries. The API filters recipients to
+           * the CITIZEN role, so this cannot be turned on staff.
+           *
+           * It opens a composer rather than sending on the click. An
+           * announcement is the authority speaking in its own words to several
+           * hundred people at once; that deserves a moment to read it back, and
+           * the text is recorded against the officer in the audit trail.
+           */
+          <Can permission="user.manage">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7"
+              onClick={() => {
+                setAnnounceTo(rows);
+                setAnnounceClear(() => clear);
+                setAnnounceTitle("");
+                setAnnounceBody("");
+                setAnnounceChannels(["SMS"]);
+                setAnnounceOpen(true);
+              }}
+            >
+              Send announcement
+            </Button>
+          </Can>
         )}
         isLoading={isLoading}
         emptyTitle={emptyReason ? "Nothing to show" : "No citizens registered"}
@@ -324,7 +517,8 @@ export function CitizensView() {
                   )}
                 </div>
                 <SheetDescription>
-                  Joined {formatDate(selected.joinedAt)} · last seen {relativeTime(selected.lastSeenAt)}
+                  Joined {formatDate(selected.joinedAt)} ·{" "}
+                  {selected.lastSeenAt ? `last seen ${relativeTime(selected.lastSeenAt)}` : "never signed in"}
                 </SheetDescription>
               </SheetHeader>
 
@@ -350,7 +544,9 @@ export function CitizensView() {
                     <span className="text-xs break-all">{selected.email ?? "Not provided"}</span>
                   </Field>
                   <Field label="Registered">{formatDate(selected.joinedAt)}</Field>
-                  <Field label="Last active">{relativeTime(selected.lastSeenAt)}</Field>
+                  <Field label="Last active">
+                    {selected.lastSeenAt ? relativeTime(selected.lastSeenAt) : "Never signed in"}
+                  </Field>
                 </dl>
 
                 <Separator />
@@ -370,6 +566,8 @@ export function CitizensView() {
                             size="sm"
                             variant={vehicle.isBlacklisted ? "outline" : "ghost"}
                             className="h-7 text-xs"
+                            disabled={!canManage}
+                            title={canManage ? undefined : NOT_PERMITTED}
                             onClick={() => {
                               const citizen = selected;
                               void apply(
@@ -409,9 +607,19 @@ export function CitizensView() {
 
                 <div className="space-y-2">
                   <p className="text-xs font-medium text-muted-foreground">Recent parking</p>
-                  {citizenSessions.length === 0 ? (
+                  {detail.isLoading ? (
+                    /* Claiming "no sessions" while the history is still in
+                       flight is the one answer this panel must never give. */
+                    <div className="space-y-2">
+                      {Array.from({ length: 3 }).map((_, i) => (
+                        <Skeleton key={i} className="h-10 w-full rounded-lg" />
+                      ))}
+                    </div>
+                  ) : citizenSessions.length === 0 ? (
                     <p className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-                      No sessions on record against this account.
+                      {detail.error
+                        ? "That parking history could not be loaded."
+                        : "No sessions on record against this account."}
                     </p>
                   ) : (
                     <ul className="divide-y divide-border/60 rounded-lg border">
@@ -440,13 +648,27 @@ export function CitizensView() {
               </div>
 
               <SheetFooter className="sm:flex-row">
-                <Button variant="outline" className="flex-1" onClick={() => toast.success("Data export queued", { description: "The citizen will receive a download link." })}>
-                  Export data
+                {/*
+                  Gated on `user.manage`, which is what the API guards the
+                  export route with. Handing somebody their whole parking
+                  history, movements included, is a significant act — the same
+                  grant that already lets an officer blacklist this account.
+                */}
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  disabled={!canManage || exporting === selected.id}
+                  title={canManage ? undefined : NOT_PERMITTED}
+                  onClick={() => void exportData(selected)}
+                >
+                  <Download className="size-4" />
+                  {exporting === selected.id ? "Assembling…" : "Export data"}
                 </Button>
                 <Button
                   variant="outline"
                   className="flex-1 text-destructive hover:text-destructive"
-                  disabled={selected.status === "BLACKLISTED"}
+                  disabled={selected.status === "BLACKLISTED" || !canManage}
+                  title={canManage ? undefined : NOT_PERMITTED}
                   onClick={() => {
                     setSheetOpen(false);
                     setBlockOpen(true);
@@ -474,6 +696,80 @@ export function CitizensView() {
           }
         }}
       />
+
+      {/* -------------------------------------------------- announcement composer */}
+      <Dialog open={announceOpen} onOpenChange={setAnnounceOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Send an announcement</DialogTitle>
+            <DialogDescription>
+              To {announceTo.length} selected {announceTo.length === 1 ? "citizen" : "citizens"}. The
+              text is recorded against your account in the audit trail.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="announce-title">Subject</Label>
+              <Input
+                id="announce-title"
+                value={announceTitle}
+                maxLength={120}
+                placeholder="Esplanade East closed on 26 March"
+                onChange={(e) => setAnnounceTitle(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="announce-body">Message</Label>
+              <Textarea
+                id="announce-body"
+                value={announceBody}
+                maxLength={600}
+                rows={5}
+                placeholder="Zone 4 is closed for the procession. Passes remain valid in every other zone."
+                onChange={(e) => setAnnounceBody(e.target.value)}
+              />
+              {/* The API caps the body at 600 characters and the SMS renderer
+                  trims to three billed segments, so the count is what an
+                  officer needs to see while writing, not afterwards. */}
+              <p className="text-xs text-muted-foreground">
+                {announceBody.length}/600 characters. Long messages are shortened on SMS.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Channels</Label>
+              <div className="flex flex-wrap gap-4">
+                {(["SMS", "WHATSAPP", "EMAIL"] as MessageChannel[]).map((channel) => (
+                  <label key={channel} className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={announceChannels.includes(channel)}
+                      onCheckedChange={() => toggleChannel(channel)}
+                    />
+                    {channel === "WHATSAPP" ? "WhatsApp" : channel === "SMS" ? "SMS" : "Email"}
+                  </label>
+                ))}
+              </div>
+              {/* Said plainly rather than discovered one failed delivery at a
+                  time: a citizen who never gave an address gets nothing on the
+                  email channel, and the reply will say so per recipient. */}
+              <p className="text-xs text-muted-foreground">
+                Citizens with no number or address on file are reported back as undelivered.
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAnnounceOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={!canAnnounce || isSending} onClick={sendAnnouncement}>
+              Send to {announceTo.length}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
