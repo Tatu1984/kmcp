@@ -18,11 +18,14 @@ import {
   ShieldAlert,
   TimerReset,
   TriangleAlert,
+  Play,
+  Square,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/frontend/components/ui/button";
 import { Badge } from "@/frontend/components/ui/badge";
 import { PageHeader } from "@/frontend/components/shared/page-header";
+import { StartSessionSheet, type StartSessionDraft } from "./start-session-sheet";
 import { StatCard } from "@/frontend/components/shared/stat-card";
 import { DataTable, facetOptionsFrom } from "@/frontend/components/shared/data-table";
 import { RowActions } from "@/frontend/components/shared/row-actions";
@@ -88,6 +91,9 @@ export function SessionsView() {
   // The subject outlives the open flag on purpose: clearing it on close would
   // swap the sheet to its zone-picker form mid-close animation.
   const [incidentOpen, setIncidentOpen] = React.useState(false);
+  const [startOpen, setStartOpen] = React.useState(false);
+  const [startNonce, setStartNonce] = React.useState(0);
+  const [starting, setStarting] = React.useState(false);
   const [incidentSubject, setIncidentSubject] = React.useState<IncidentSubject | null>(null);
   const { send } = useMessaging();
   // Only `run` is taken: it is referentially stable, so the column memo below
@@ -378,6 +384,26 @@ export function SessionsView() {
                     onSelect: () => void downloadReceipt(session),
                   },
                   {
+                    label: "End session and compute fare",
+                    icon: Square,
+                    // POST /sessions/:id/end — sessions.controller.ts:94, the
+                    // same grant as starting one. The fare is not sent: the
+                    // server prices the elapsed time against the rate card in
+                    // force, which is the only place that decision is made.
+                    permission: "session.read",
+                    hidden: !live,
+                    separatorBefore: true,
+                    onSelect: () =>
+                      void apply(
+                        () => sessionsApi.end(session.id),
+                        (list) => list,
+                        {
+                          success: "Session ended",
+                          description: `${session.plateNumber} · fare computed by the server.`,
+                        },
+                      ).catch(() => undefined),
+                  },
+                  {
                     label: "Open zone",
                     icon: MapPin,
                     // GET /zones/:id — zones.controller.ts:79
@@ -410,7 +436,7 @@ export function SessionsView() {
         },
       },
     ],
-    [resendReceipt, downloadReceipt],
+    [resendReceipt, downloadReceipt, apply],
   );
 
   const activeCount = data.filter((s) => s.status === "ACTIVE").length;
@@ -436,11 +462,23 @@ export function SessionsView() {
           ) : undefined
         }
         actions={
-          <Button variant="outline" size="sm" className="h-9" asChild>
-            <Link href={`${ROUTES.sessions}?status=OVERSTAY`}>
-              <TriangleAlert className="size-4" /> Overstays
-            </Link>
-          </Button>
+          <>
+            <Button variant="outline" size="sm" className="h-9" asChild>
+              <Link href={`${ROUTES.sessions}?status=OVERSTAY`}>
+                <TriangleAlert className="size-4" /> Overstays
+              </Link>
+            </Button>
+            {/* Starting a session is an attendant's job and sits on the same
+                grant — see the note on POST /sessions/start. */}
+            <Can permission="session.read">
+              <Button size="sm" className="h-9" onClick={() => {
+                  setStartNonce((n) => n + 1);
+                  setStartOpen(true);
+                }}>
+                <Play className="size-4" /> Start a session
+              </Button>
+            </Can>
+          </>
         }
       />
 
@@ -589,6 +627,38 @@ export function SessionsView() {
        * what owns the live call, the error toast and the demo-mode branch, and
        * a report raised in demo mode should still say so.
        */}
+      <StartSessionSheet
+        // Remounted per opening so the sheet's idempotency key is fresh for
+        // each attempt without an effect regenerating it.
+        key={startNonce}
+        open={startOpen}
+        onOpenChange={setStartOpen}
+        busy={starting}
+        onStart={(draft: StartSessionDraft) => {
+          setStarting(true);
+          void apply(
+            () =>
+              sessionsApi.start({
+                clientEventId: draft.clientEventId,
+                zoneId: draft.zoneId,
+                plateNumber: draft.plateNumber,
+                vehicleType: draft.vehicleType,
+                source: "ADMIN_PORTAL",
+              }),
+            // Demo mode gets a plausible row; live mode refetches, so the list
+            // update here is only ever seen without an API.
+            (list) => list,
+            {
+              success: "Session started",
+              description: `${draft.plateNumber} · ${draft.zoneName} — the meter is running.`,
+            },
+          )
+            .then(() => setStartOpen(false))
+            .catch(() => undefined)
+            .finally(() => setStarting(false));
+        }}
+      />
+
       <IncidentFormSheet
         open={incidentOpen}
         onOpenChange={setIncidentOpen}

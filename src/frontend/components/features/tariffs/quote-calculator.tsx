@@ -16,6 +16,8 @@ import {
 } from "@/frontend/components/ui/select";
 import { SectionCard, Money } from "@/frontend/components/shared/bits";
 import { TARIFFS } from "@/frontend/lib/mock";
+import { isLiveApi } from "@/config/env";
+import { LiveQuoteCalculator } from "./live-quote-calculator";
 import { formatDuration, formatMoney } from "@/shared/utils/common.util";
 import { VEHICLE_TYPE_LABELS } from "@/config/app.config";
 
@@ -88,6 +90,20 @@ function computeQuote(
 }
 
 export function QuoteCalculator() {
+  /**
+   * Against a live API the fare comes from the API.
+   *
+   * What follows is the demo-mode calculator, and it reimplements the tariff
+   * rules in the browser — acceptable on a laptop with no backend, and wrong
+   * anywhere else, because a second copy of the pricing rules is a second thing
+   * to keep in step with the approved rate card.
+   */
+  if (isLiveApi) return <LiveQuoteCalculator />;
+
+  return <DemoQuoteCalculator />;
+}
+
+function DemoQuoteCalculator() {
   const published = PUBLISHED;
   const [tariffId, setTariffId] = React.useState(published[0].id);
   const [minutes, setMinutes] = React.useState(150);
