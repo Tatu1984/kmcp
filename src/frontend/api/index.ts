@@ -18,7 +18,13 @@ export type {
 export { geographyApi } from "./endpoints/geography.api";
 export type { ApiWard, ApiStreet } from "./endpoints/geography.api";
 export { vendorsApi } from "./endpoints/vendors.api";
-export type { ApiVendor } from "./endpoints/vendors.api";
+export type { ApiVendor, ApiVendorDashboard } from "./endpoints/vendors.api";
+export { attendantPaymentsApi, PAY_MODE_LABELS } from "./endpoints/attendant-payments.api";
+export type {
+  ApiAttendantPayment,
+  ApiAttendantPaySummary,
+  AttendantPayMode,
+} from "./endpoints/attendant-payments.api";
 export { vehicleTypesApi, slotsApi, attendantsApi, usersApi, settingsApi } from "./endpoints/master.api";
 export type {
   ApiVehicleType,

@@ -19,12 +19,15 @@ import { FadeIn } from "@/frontend/components/reactbits";
 import { authApi, ApiError } from "@/frontend/api";
 import { startSession, toSessionUser } from "@/frontend/lib/session";
 import { isLiveApi } from "@/config/env";
-import { ROUTES } from "@/shared/constants/routes";
+import { ROUTES, landingFor } from "@/shared/constants/routes";
 
 export function TwoFactorForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const next = params.get("next") ?? ROUTES.dashboard;
+  // Nullable, like the sign-in screen: where an account belongs is only known
+  // once the server has said who they are. The demo branch below has no
+  // principal to read, so it keeps the dashboard.
+  const next = params.get("next");
 
   const [code, setCode] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -58,7 +61,7 @@ export function TwoFactorForm() {
         }
         document.cookie = "kmcp_session=demo; path=/; samesite=lax; max-age=86400";
         toast.success("Signed in", { description: "Welcome back to the KMCP portal." });
-        router.push(next);
+        router.push(next || ROUTES.dashboard);
         return;
       }
 
@@ -76,9 +79,10 @@ export function TwoFactorForm() {
           setError("Verified, but the server sent no account details. Sign in again.");
           return;
         }
-        startSession(toSessionUser(result.user));
+        const user = toSessionUser(result.user);
+        startSession(user);
         toast.success("Signed in", { description: "Welcome back to the KMCP portal." });
-        router.push(next);
+        router.push(next || landingFor(user.role));
       } catch (cause) {
         setBusy(false);
         setCode("");

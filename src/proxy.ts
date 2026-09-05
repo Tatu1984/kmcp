@@ -1,6 +1,7 @@
+import { landingFor } from "@/shared/constants/routes";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/login", "/forgot-password", "/two-factor"];
+const PUBLIC_PATHS = ["/login", "/vendor/login", "/forgot-password", "/two-factor"];
 const PUBLIC_API = [
   "/api/v1/auth",
   "/api/v1/public",
@@ -71,14 +72,19 @@ export function proxy(request: NextRequest) {
   // Portal surface.
   if (!pathname.startsWith("/api/") && !isPublicPage && !session) {
     const url = request.nextUrl.clone();
-    url.pathname = "/login";
+    // An operator arrives on a link of their own and should meet their own
+    // door, not the authority's console asking for a KMC work address.
+    url.pathname = pathname.startsWith("/vendor") ? "/vendor/login" : "/login";
     url.searchParams.set("next", pathname);
     return NextResponse.redirect(url);
   }
 
   if (isPublicPage && session) {
     const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
+    // The cookie's value is the role in lower case, which is enough to know
+    // whether this is a vendor going to their own portal or a KMC account
+    // going to the dashboard.
+    url.pathname = landingFor(session);
     url.search = "";
     return NextResponse.redirect(url);
   }

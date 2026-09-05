@@ -16,7 +16,7 @@ import { FadeIn, ShinyText, StarBorder } from "@/frontend/components/reactbits";
 import { authApi, ApiError } from "@/frontend/api";
 import { startSession, toSessionUser } from "@/frontend/lib/session";
 import { isLiveApi } from "@/config/env";
-import { ROUTES } from "@/shared/constants/routes";
+import { ROUTES, landingFor } from "@/shared/constants/routes";
 
 /**
  * These are the four staff accounts `prisma/seed.ts` creates in the backend, so
@@ -35,7 +35,9 @@ const DEMO_ACCOUNTS = [
 export function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const next = params.get("next") ?? ROUTES.dashboard;
+  // Deliberately nullable. Where an account belongs is only knowable once the
+  // server has said who they are, so the fallback is applied after sign-in.
+  const next = params.get("next");
 
   const [email, setEmail] = React.useState("sudipta.banerjee@kmc.gov.in");
   const [password, setPassword] = React.useState(DEMO_PASSWORD);
@@ -64,7 +66,7 @@ export function LoginForm() {
       // Admin accounts carry mandatory 2FA — the flow continues on the next screen.
       toast.success("Password accepted", { description: "Enter the 6-digit code from your authenticator." });
       router.push(
-        `${ROUTES.twoFactor}?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}`,
+        `${ROUTES.twoFactor}?next=${encodeURIComponent(next ?? "")}&email=${encodeURIComponent(email)}`,
       );
       return;
     }
@@ -77,15 +79,16 @@ export function LoginForm() {
           description: "Enter the 6-digit code from your authenticator.",
         });
         router.push(
-          `${ROUTES.twoFactor}?next=${encodeURIComponent(next)}&email=${encodeURIComponent(email)}` +
+          `${ROUTES.twoFactor}?next=${encodeURIComponent(next ?? "")}&email=${encodeURIComponent(email)}` +
             `&challenge=${encodeURIComponent(result.challengeId)}`,
         );
         return;
       }
 
       if (result.user) {
-        startSession(toSessionUser(result.user), remember);
-        router.push(next);
+        const user = toSessionUser(result.user);
+        startSession(user, remember);
+        router.push(next || landingFor(user.role));
         return;
       }
 

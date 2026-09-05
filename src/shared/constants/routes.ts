@@ -17,6 +17,19 @@ export const ROUTES = {
 
   vendors: "/vendors",
   vendor: (id: string) => `/vendors/${id}`,
+
+  /**
+   * The vendor's own portal, which is a different place from `/vendors`.
+   *
+   * `/vendors` is the authority looking at its contractors. `/vendor` is a
+   * contractor looking at itself — its own zones, its own staff, its own
+   * settlement. Deliberately a separate route group with its own shell, so a
+   * vendor never sees the authority's navigation.
+   */
+  vendorPortal: "/vendor",
+  vendorLogin: "/vendor/login",
+  vendorStaff: "/vendor/staff",
+  vendorSettlements: "/vendor/settlements",
   attendants: "/attendants",
   shifts: "/shifts",
 
@@ -39,3 +52,19 @@ export const ROUTES = {
 export const API = {
   base: "/api/v1",
 } as const;
+
+/**
+ * Where an account belongs when nothing else has been asked for.
+ *
+ * A vendor arrives on a link of their own — parking.<host>/vendor — and is
+ * bounced through /login like anyone else, so after signing in they must land
+ * back in their own portal rather than on the authority's dashboard, which
+ * shows them KMC's view of the whole city and none of their own business.
+ *
+ * Takes a role in any casing because the two callers hold it differently: the
+ * portal has the principal from /auth/me, and the edge proxy has only the
+ * session cookie, whose value is the role in lower case.
+ */
+export function landingFor(role: string | undefined | null): string {
+  return role?.toUpperCase() === "VENDOR" ? ROUTES.vendorPortal : ROUTES.dashboard;
+}

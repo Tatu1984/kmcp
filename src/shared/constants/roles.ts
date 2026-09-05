@@ -65,6 +65,11 @@ export const PERMISSION_GROUPS = [
       { key: "vendor.write", label: "Create & edit vendors" },
       { key: "vendor.approve", label: "Approve / suspend / block vendors" },
       { key: "attendant.write", label: "Manage attendants" },
+      // Vendor-only, and not merely by grant: the API refuses any caller
+      // without a vendorId of their own, so a superuser holding every
+      // permission still cannot read what a vendor pays their staff.
+      { key: "attendant.pay.read", label: "View own staff payments" },
+      { key: "attendant.pay.write", label: "Record a staff payment" },
       { key: "shift.verify", label: "Verify shift deposits" },
     ],
   },
