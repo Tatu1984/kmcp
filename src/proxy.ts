@@ -1,7 +1,12 @@
 import { landingFor } from "@/shared/constants/routes";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/login", "/vendor/login", "/forgot-password", "/two-factor"];
+/** The operator portal, and nothing that merely begins with the same letters. */
+function isOperatorPath(pathname: string): boolean {
+  return pathname === "/vendor" || pathname.startsWith("/vendor/");
+}
+
+const PUBLIC_PATHS = ["/login", "/vendors/login", "/forgot-password", "/two-factor"];
 const PUBLIC_API = [
   "/api/v1/auth",
   "/api/v1/public",
@@ -74,7 +79,13 @@ export function proxy(request: NextRequest) {
     const url = request.nextUrl.clone();
     // An operator arrives on a link of their own and should meet their own
     // door, not the authority's console asking for a KMC work address.
-    url.pathname = pathname.startsWith("/vendor") ? "/vendor/login" : "/login";
+    //
+    // The test has to be exact. `startsWith("/vendor")` also matches
+    // `/vendors`, which is the authority's own list of contractors — a zone
+    // officer opening a bookmark to it would have been handed the operator
+    // sign-in and told to enter an address their organisation was registered
+    // with, which they do not have.
+    url.pathname = isOperatorPath(pathname) ? "/vendors/login" : "/login";
     url.searchParams.set("next", pathname);
     return NextResponse.redirect(url);
   }

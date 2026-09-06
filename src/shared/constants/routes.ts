@@ -27,7 +27,14 @@ export const ROUTES = {
    * vendor never sees the authority's navigation.
    */
   vendorPortal: "/vendor",
-  vendorLogin: "/vendor/login",
+  /**
+   * Sits under `/vendors` rather than `/vendor` on purpose: the operator's
+   * door belongs in the same namespace as everything else about operators,
+   * and one fewer near-identical URL is one fewer way to send somebody to the
+   * wrong sign-in screen. It resolves ahead of `/vendors/[id]` because a
+   * static segment always beats a dynamic one.
+   */
+  vendorLogin: "/vendors/login",
   vendorStaff: "/vendor/staff",
   vendorSettlements: "/vendor/settlements",
   attendants: "/attendants",
