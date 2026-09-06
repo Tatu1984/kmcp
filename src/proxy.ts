@@ -1,4 +1,4 @@
-import { landingFor } from "@/shared/constants/routes";
+import { ROUTES, landingFor } from "@/shared/constants/routes";
 import { NextResponse, type NextRequest } from "next/server";
 
 /** The operator portal, and nothing that merely begins with the same letters. */
@@ -87,6 +87,41 @@ export function proxy(request: NextRequest) {
     // with, which they do not have.
     url.pathname = isOperatorPath(pathname) ? "/vendors/login" : "/login";
     url.searchParams.set("next", pathname);
+    return NextResponse.redirect(url);
+  }
+
+  /**
+   * An operator who has wandered into the authority's console is sent home.
+   *
+   * A vendor typing `/dashboard`, or opening a bookmark somebody sent them, met
+   * KMC's shell: a sidebar of doors that mostly refuse them, a vendor register
+   * that answers 403, and a settlements screen with an approve button they can
+   * never press. Nothing leaks — every screen there is scoped by the API to
+   * their own operator and the rest is refused — but it is the exact experience
+   * the separate portal exists to avoid, and it teaches them the system is
+   * mostly refusals.
+   *
+   * Routing, not a gate, and the distinction matters here more than anywhere
+   * else in this file: the cookie says `vendor` because a script wrote it, and
+   * a forged one buys nothing, because the API judges the bearer token on every
+   * request. This only decides which shell somebody is shown.
+   *
+   * `/settings` is deliberately exempt. It is where an account changes its own
+   * password and enrols an authenticator, the operator portal has no equivalent
+   * of its own yet, and locking a vendor out of their own password to save them
+   * a confusing sidebar would be a poor trade.
+   */
+  if (
+    session &&
+    landingFor(session) === ROUTES.vendorPortal &&
+    !pathname.startsWith("/api/") &&
+    !isOperatorPath(pathname) &&
+    !isPublicPage &&
+    !pathname.startsWith("/settings")
+  ) {
+    const url = request.nextUrl.clone();
+    url.pathname = ROUTES.vendorPortal;
+    url.search = "";
     return NextResponse.redirect(url);
   }
 

@@ -351,11 +351,11 @@ export function SettlementsView() {
                     label: "Send for approval",
                     icon: Play,
                     hidden: settlement.status !== "DRAFT",
-                    // POST /settlements/:id/submit — settlements.controller.ts:73,
-                    // guarded by settlement.read: putting a draft in front of an
-                    // approver decides nothing, and whoever prepares the run has
-                    // to be able to hand it on.
-                    permission: "settlement.read",
+                    // POST /settlements/:id/submit, guarded by
+                    // settlement.approve for the same reason generate is: it is
+                    // a write, and the read grant is held by people whose whole
+                    // role is that they make none.
+                    permission: "settlement.approve",
                     onSelect: () => {
                       void step(
                         settlement,
@@ -407,12 +407,19 @@ export function SettlementsView() {
         }
         actions={
           /**
-           * POST /settlements/generate — settlements.controller.ts:56, guarded
-           * by `settlement.read`. Generating only gathers payments nobody has
-           * claimed into a draft; nothing is decided and nothing is paid until
-           * an approver acts, which is why it does not need their permission.
+           * POST /settlements/generate, guarded by `settlement.approve`.
+           *
+           * It used to be `settlement.read`, on the reasoning that gathering
+           * unclaimed payments into a draft decides nothing. The reasoning held
+           * for the draft and not for the reader: `settlement.read` is also the
+           * auditor's grant, and the operator's — and generate names the vendor
+           * to settle in its request body rather than taking it from the
+           * caller's own scope. So this control was being offered to an auditor
+           * who must change nothing, and to a contractor who could have named a
+           * competitor. Both are closed on the API now, and the button follows
+           * the grant that actually opens the route.
            */
-          <Can permission="settlement.read">
+          <Can permission="settlement.approve">
             <Button size="sm" className="h-9" onClick={() => setRunOpen(true)}>
               <Play className="size-4" /> Run settlement
             </Button>
