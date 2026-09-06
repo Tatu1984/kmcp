@@ -5,6 +5,7 @@ import { AlertTriangle, Cctv, Search } from "lucide-react";
 
 import {
   camerasApi,
+  listAll,
   CAMERA_STATUS_LABELS,
   type ApiCamera,
   type CameraStatus,
@@ -43,8 +44,11 @@ export function CamerasView() {
   const [query, setQuery] = React.useState("");
   const [selected, setSelected] = React.useState<ApiCamera | null>(null);
 
+  // Paged rather than asked for in one go: the API caps pageSize at 100, and a
+  // city with two or three cameras per stretch of kerb passes that quickly.
+  // `listAll` walks the pages, which is what every other list screen here does.
   const cameras = useApiQuery(["cameras", "list"], () =>
-    camerasApi.list({ pageSize: 200 }).then((r) => r.data),
+    listAll<ApiCamera>((page, pageSize) => camerasApi.list({ page, pageSize })),
   );
   const health = useApiQuery(["cameras", "health"], () =>
     camerasApi.health().then((r) => r.data),
