@@ -11,10 +11,42 @@ import { Input } from "@/frontend/components/ui/input";
 import { Label } from "@/frontend/components/ui/label";
 import { Checkbox } from "@/frontend/components/ui/checkbox";
 import { Alert, AlertDescription } from "@/frontend/components/ui/alert";
+import { Separator } from "@/frontend/components/ui/separator";
 import { authApi, ApiError } from "@/frontend/api";
 import { startSession, toSessionUser } from "@/frontend/lib/session";
 import { isLiveApi } from "@/config/env";
 import { ROUTES, landingFor } from "@/shared/constants/routes";
+
+/**
+ * The three operators `prisma/data/vendors.json` seeds, with the password the
+ * backend's seed gives every demonstration account. Keep this list in step with
+ * that file, as the KMC screen's list is kept in step with the staff seed.
+ *
+ * Worth all three rather than one: they are not interchangeable. Metro Kerb
+ * runs four zones and has a settlement in every state, Orbit is a smaller
+ * operation, and Civic Mobility is still awaiting KMC's approval — which is the
+ * one an operator signing in for the first time will actually recognise, and
+ * the only way to see what this portal looks like on day one.
+ */
+const DEMO_PASSWORD = "kmcp-demo-2026";
+
+const DEMO_OPERATORS = [
+  {
+    org: "Metro Kerb Management",
+    email: "ops@metrokerb.in",
+    hint: "Four zones, settlements in every state",
+  },
+  {
+    org: "Orbit Parking Services",
+    email: "ops@orbitparking.in",
+    hint: "Three zones, a smaller operation",
+  },
+  {
+    org: "Civic Mobility Contractors",
+    email: "ops@civicmobility.in",
+    hint: "Approval still pending — nothing to show yet",
+  },
+];
 
 /**
  * Sign-in for an operator, at a link of their own.
@@ -34,8 +66,8 @@ export function VendorLoginForm() {
   const params = useSearchParams();
   const next = params.get("next");
 
-  const [email, setEmail] = React.useState("");
-  const [password, setPassword] = React.useState("");
+  const [email, setEmail] = React.useState(DEMO_OPERATORS[0].email);
+  const [password, setPassword] = React.useState(DEMO_PASSWORD);
   const [showPassword, setShowPassword] = React.useState(false);
   const [remember, setRemember] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
@@ -199,6 +231,38 @@ export function VendorLoginForm() {
           )}
         </Button>
       </form>
+
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <Separator className="flex-1" />
+          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Demo operators
+          </span>
+          <Separator className="flex-1" />
+        </div>
+        {/* One per row rather than the two-column grid the KMC screen uses:
+            an organisation's name is a good deal longer than "Zone Officer",
+            and this column is narrower. */}
+        <div className="space-y-2">
+          {DEMO_OPERATORS.map((operator) => (
+            <button
+              key={operator.email}
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setEmail(operator.email);
+                setPassword(DEMO_PASSWORD);
+                setError(null);
+                toast.info(`Filled ${operator.org}`, { description: operator.email });
+              }}
+              className="w-full rounded-lg border bg-card px-3 py-2 text-left transition-colors hover:border-primary/40 hover:bg-accent/40 disabled:opacity-60"
+            >
+              <p className="text-xs font-medium">{operator.org}</p>
+              <p className="truncate text-[11px] text-muted-foreground">{operator.hint}</p>
+            </button>
+          ))}
+        </div>
+      </div>
 
       <p className="text-xs text-muted-foreground">
         Accounts are issued by KMC when an operator is approved. If you cannot sign in, your
