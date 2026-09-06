@@ -287,8 +287,16 @@ export function SettlementDetailView({ settlementId }: { settlementId: string })
                 <Field label="Digital">
                   <Money value={settlement.digitalCollected} />
                 </Field>
-                <Field label="Commission">
-                  −<Money value={settlement.commissionAmount} />
+                {/*
+                  What comes off the takings is the authority's share, not the
+                  commission. The commission *is* the operator's fee — the card
+                  above states it, and `vendorShare` carries the same number —
+                  so subtracting it here left a breakdown that did not add up:
+                  gross, less the vendor's own fee, equalling the vendor's own
+                  fee.
+                */}
+                <Field label="KMC share">
+                  −<Money value={settlement.governmentShare} />
                 </Field>
               </dl>
               <Separator className="my-3" />
