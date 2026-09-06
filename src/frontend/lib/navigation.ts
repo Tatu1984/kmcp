@@ -4,6 +4,7 @@ import {
   BookOpen,
   Building2,
   CalendarClock,
+  Cctv,
   CircleParking,
   ClipboardList,
   Coins,
@@ -120,6 +121,16 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: Map,
         description: "Civic divisions zones and streets belong to",
         keywords: ["division", "geography", "street", "boundary"],
+      },
+      {
+        label: "Cameras",
+        href: ROUTES.cameras,
+        icon: Cctv,
+        description: "CCTV on the roads, and which of them are dark",
+        // GET /cameras — cameras.controller.ts. Held by the authority only;
+        // officers and operators have no sight of a live street yet.
+        permission: "camera.view",
+        keywords: ["cctv", "camera", "video", "stream", "surveillance"],
       },
       {
         label: "Incidents",
