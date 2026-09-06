@@ -17,6 +17,8 @@ export type {
 } from "./endpoints/audit.api";
 export { geographyApi } from "./endpoints/geography.api";
 export type { ApiWard, ApiStreet } from "./endpoints/geography.api";
+export { camerasApi, CAMERA_STATUS_LABELS } from "./endpoints/cameras.api";
+export type { ApiCamera, ApiCameraHealth, ApiCameraPlayback, CameraStatus } from "./endpoints/cameras.api";
 export { vendorsApi } from "./endpoints/vendors.api";
 export type { ApiVendor, ApiVendorDashboard } from "./endpoints/vendors.api";
 export { attendantPaymentsApi, PAY_MODE_LABELS } from "./endpoints/attendant-payments.api";

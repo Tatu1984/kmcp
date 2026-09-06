@@ -52,6 +52,8 @@ export const PERMISSION_GROUPS = [
       { key: "zone.write", label: "Create & edit zones" },
       { key: "zone.status", label: "Open / close zones" },
       { key: "slot.write", label: "Manage slots" },
+      { key: "camera.view", label: "View camera streams" },
+      { key: "camera.manage", label: "Add & edit cameras" },
       { key: "session.read", label: "View parking sessions" },
       { key: "session.cancel", label: "Cancel a session" },
       { key: "incident.manage", label: "Manage incidents" },
