@@ -7,6 +7,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Maximize2,
   Search,
   Trash2,
   Zap,
@@ -39,13 +40,13 @@ import {
   DropdownMenuTrigger,
 } from "@/frontend/components/ui/dropdown-menu";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/frontend/components/ui/sheet";
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/frontend/components/ui/accordion";
 import { CameraPlayer } from "./camera-player";
+import { CameraFullscreen } from "./camera-fullscreen";
 import { CameraFormDialog } from "./camera-form-dialog";
 import { cn } from "@/lib/utils";
 
@@ -83,6 +84,15 @@ export function CamerasView() {
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
   const [probing, setProbing] = React.useState<string | null>(null);
   const [showRetired, setShowRetired] = React.useState(false);
+  /**
+   * Which roads are open. Null means nobody has chosen yet, which is different
+   * from "none open" and is why this is not just an array: untouched, the first
+   * road opens so the page shows a picture rather than a list of closed rows,
+   * and a search opens everything it matched — but once somebody has opened or
+   * closed a road themselves, their choice stands.
+   */
+  const [openRoads, setOpenRoads] = React.useState<string[] | null>(null);
+  const [openChoiceFor, setOpenChoiceFor] = React.useState("");
 
   // Paged rather than asked for in one go: the API caps pageSize at 100, and a
   // city with two or three cameras per stretch of kerb passes that quickly.
@@ -253,6 +263,17 @@ export function CamerasView() {
     byStreet.set(c.streetId, entry);
   }
 
+  // A new search is a new question, so the roads it matched open and any
+  // earlier choice is forgotten. Adjusted during render rather than in an
+  // effect, as `ConfirmDialog` and the camera form do.
+  if (openChoiceFor !== needle) {
+    setOpenChoiceFor(needle);
+    setOpenRoads(null);
+  }
+
+  const roadIds = [...byStreet.keys()];
+  const roadsOpen = openRoads ?? (needle ? roadIds : roadIds.slice(0, 1));
+
   const dark = (health.data?.byStatus ?? [])
     .filter((s) => s.status !== "ONLINE" && s.status !== "DECOMMISSIONED")
     .reduce((sum, s) => sum + s.count, 0);
@@ -313,156 +334,95 @@ export function CamerasView() {
           description="No camera, code or road matched what you typed."
         />
       ) : (
-        <div className="space-y-8">
-          {[...byStreet.entries()].map(([streetId, group]) => (
-            <section key={streetId} className="space-y-3">
-              <div className="flex items-baseline gap-2">
-                <h2 className="text-lg font-semibold tracking-tight">{group.name}</h2>
-                <span className="text-sm text-muted-foreground">
-                  {group.ward} · {group.cameras.length} camera
-                  {group.cameras.length === 1 ? "" : "s"}
-                </span>
-              </div>
+        /**
+         * A road at a time, and nothing plays until one is opened.
+         *
+         * The old screen listed every camera as a card you had to open one by
+         * one to see anything, which made "look at Camac Street" a sequence of
+         * clicks rather than a glance. Expanding a road now shows its two or
+         * three pictures side by side, live.
+         *
+         * Still not a wall of forty streams on page load, which is what the
+         * gateway would have to carry if every road were open: the media server
+         * pulls a camera on demand, so a closed road costs nothing and an open
+         * one costs exactly the cameras somebody is looking at. Roads are opened
+         * by a person, and as many as they like at once.
+         */
+        <Accordion
+          type="multiple"
+          value={roadsOpen}
+          onValueChange={setOpenRoads}
+          className="rounded-xl border"
+        >
+          {[...byStreet.entries()].map(([streetId, group]) => {
+            const darkOnRoad = group.cameras.filter(
+              (c) => c.status !== "ONLINE" && c.isActive,
+            ).length;
 
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {group.cameras.map((c) => (
-                  <CameraTile
-                    key={c.id}
-                    camera={c}
-                    busy={probing === c.id}
-                    onOpen={() => setSelectedId(c.id)}
-                    onEdit={() => {
-                      setEditingId(c.id);
-                      setFormOpen(true);
-                    }}
-                    onProbe={() => void probe(c)}
-                    onDelete={() => setDeletingId(c.id)}
-                  />
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
-      )}
-
-      <Sheet open={selected !== null} onOpenChange={(open) => !open && setSelectedId(null)}>
-        <SheetContent side="right" className="w-full gap-0 overflow-y-auto sm:max-w-xl">
-          {selected ? (
-            <>
-              <SheetHeader>
-                <SheetTitle>{selected.label}</SheetTitle>
-                <SheetDescription>
-                  {selected.code} · {selected.street.name}, {selected.street.ward.name}
-                </SheetDescription>
-              </SheetHeader>
-
-              <div className="space-y-4 px-4 pb-6">
-                <CameraPlayer camera={selected} />
-
-                <Can permission="camera.manage">
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void probe(selected)}
-                      disabled={probing === selected.id}
-                    >
-                      <Zap className="size-4" aria-hidden />
-                      {probing === selected.id ? "Testing…" : "Test connection"}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setEditingId(selected.id);
-                        setFormOpen(true);
-                      }}
-                    >
-                      <Pencil className="size-4" aria-hidden />
-                      Edit
-                    </Button>
-                  </div>
-                </Can>
-
-                <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                  <Detail label="Status" value={CAMERA_STATUS_LABELS[selected.status]} />
-                  <Detail
-                    label="Last seen"
-                    value={
-                      selected.lastSeenAt
-                        ? new Date(selected.lastSeenAt).toLocaleString("en-IN")
-                        : "Never"
-                    }
-                  />
-                  <Detail label="Make & model" value={selected.makeModel ?? "Not recorded"} />
-                  <Detail
-                    label="Installed"
-                    value={
-                      selected.installedAt
-                        ? new Date(selected.installedAt).toLocaleDateString("en-IN")
-                        : "Not recorded"
-                    }
-                  />
-                  <Detail
-                    label="Picture"
-                    value={
-                      selected.resolution
-                        ? `${selected.resolution}${selected.fps ? ` · ${selected.fps} fps` : ""}`
-                        : "Not tested"
-                    }
-                  />
-                  <Detail
-                    label="Bays in view"
-                    value={
-                      selected.coverageSlots == null ? "Not recorded" : String(selected.coverageSlots)
-                    }
-                  />
-                </dl>
-
-                {/* ffprobe's own words. Terse, but "401 Unauthorized" and
-                    "Connection refused" send an engineer to two different
-                    places, and paraphrasing loses exactly that. */}
-                {selected.probeError ? (
-                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
-                    <p className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-500">
-                      Last test failed
-                    </p>
-                    <p className="mt-1 break-words font-mono text-xs text-muted-foreground">
-                      {selected.probeError}
-                    </p>
-                    {selected.probedAt ? (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {new Date(selected.probedAt).toLocaleString("en-IN")}
-                      </p>
+            return (
+              <AccordionItem key={streetId} value={streetId} className="px-4">
+                <AccordionTrigger className="hover:no-underline">
+                  <div className="flex flex-1 flex-wrap items-baseline gap-x-3 gap-y-1 pr-2 text-left">
+                    <span className="text-base font-semibold tracking-tight">{group.name}</span>
+                    <span className="text-sm text-muted-foreground">
+                      {group.ward} · {group.cameras.length} camera
+                      {group.cameras.length === 1 ? "" : "s"}
+                    </span>
+                    {/* The one fact worth carrying on a closed row: whether
+                        opening it will show pictures or apologies. */}
+                    {darkOnRoad > 0 ? (
+                      <Badge variant="outline" className="text-amber-600 dark:text-amber-500">
+                        {darkOnRoad} dark
+                      </Badge>
                     ) : null}
                   </div>
-                ) : null}
+                </AccordionTrigger>
 
-                <div className="flex flex-wrap gap-1.5">
-                  {selected.hasIR ? <Badge variant="outline">Infra-red</Badge> : null}
-                  {selected.hasPTZ ? <Badge variant="outline">Pan, tilt, zoom</Badge> : null}
-                  {!selected.isActive ? <Badge variant="secondary">Out of service</Badge> : null}
-                </div>
-
-                {selected.street.zones.length > 0 ? (
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                      Zones priced on this road
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {selected.street.zones.map((z) => (
-                        <Badge key={z.id} variant="outline">
-                          {z.name}
-                        </Badge>
-                      ))}
-                    </div>
+                <AccordionContent>
+                  <div className="grid gap-3 pb-2 sm:grid-cols-2 xl:grid-cols-3">
+                    {group.cameras.map((c) => (
+                      <CameraTile
+                        key={c.id}
+                        camera={c}
+                        busy={probing === c.id}
+                        onOpen={() => setSelectedId(c.id)}
+                        onEdit={() => {
+                          setEditingId(c.id);
+                          setFormOpen(true);
+                        }}
+                        onProbe={() => void probe(c)}
+                        onDelete={() => setDeletingId(c.id)}
+                      />
+                    ))}
                   </div>
-                ) : null}
-              </div>
-            </>
-          ) : null}
-        </SheetContent>
-      </Sheet>
+                </AccordionContent>
+              </AccordionItem>
+            );
+          })}
+        </Accordion>
+      )}
+
+      {/*
+        Clicking a picture stops browsing the network and starts watching a
+        street, so the picture takes the whole screen rather than opening a
+        panel beside the list. Everything an operator might do to the camera
+        travels with it.
+      */}
+      {selected ? (
+        <CameraFullscreen
+          camera={selected}
+          siblings={(byStreet.get(selected.streetId)?.cameras ?? [selected])}
+          onSelect={(camera) => setSelectedId(camera.id)}
+          onClose={() => setSelectedId(null)}
+          onProbe={() => void probe(selected)}
+          onEdit={() => {
+            setEditingId(selected.id);
+            setFormOpen(true);
+          }}
+          probing={probing === selected.id}
+        />
+      ) : null}
+
 
       <CameraFormDialog
         open={formOpen}
@@ -498,6 +458,16 @@ const STATUS_STYLE: Record<CameraStatus, string> = {
   DECOMMISSIONED: "bg-muted-foreground/50",
 };
 
+/**
+ * One camera on the wall: the picture, live, and everything about it in the
+ * strip underneath.
+ *
+ * This used to be a card of text you had to open to see anything, which made
+ * "look at Camac Street" a sequence of clicks. The picture is the tile now.
+ * The compact player drops the transport switch and the reconnect button —
+ * three sets of controls competing with three videos is noise, and both are
+ * there in full screen, which is where somebody who wants them has gone.
+ */
 function CameraTile({
   camera,
   busy,
@@ -514,72 +484,79 @@ function CameraTile({
   onDelete: () => void;
 }) {
   return (
-    <Card
-      className={cn(
-        "group relative transition-colors hover:bg-muted/50",
-        !camera.isActive && "opacity-60",
-      )}
-    >
-      <CardContent className="space-y-2 p-4">
-        <div className="flex items-start justify-between gap-2">
-          <span className="font-mono text-xs text-muted-foreground">{camera.code}</span>
-          {/* Status is a dot and a word, never a dot alone. */}
-          <span className="flex items-center gap-1.5 text-xs font-medium">
-            <span className={cn("size-2 rounded-full", STATUS_STYLE[camera.status])} aria-hidden />
-            {CAMERA_STATUS_LABELS[camera.status]}
-          </span>
+    <Card className={cn("group overflow-hidden py-0", !camera.isActive && "opacity-60")}>
+      <CardContent className="p-0">
+        <div className="relative">
+          <CameraPlayer camera={camera} compact />
+
+          {/*
+            The click target is the picture, which is what somebody reaches for.
+            It sits over the video rather than wrapping it, because a <button>
+            around a <video> swallows the player's own controls — and it steps
+            aside for them in full screen, where those controls are the point.
+          */}
+          <button
+            type="button"
+            onClick={onOpen}
+            aria-label={`Watch ${camera.code} full screen`}
+            className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors hover:bg-black/25 focus-visible:bg-black/25 focus-visible:outline-none"
+          >
+            <span className="rounded-full bg-black/60 p-2 text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+              <Maximize2 className="size-4" aria-hidden />
+            </span>
+          </button>
         </div>
 
-        {/* The whole tile opens the camera; the menu is the exception, so it
-            sits outside the button rather than inside it. */}
-        <button
-          type="button"
-          onClick={onOpen}
-          className="block w-full space-y-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <p className="text-sm font-medium leading-snug">{camera.label}</p>
-          <p className="text-xs text-muted-foreground">
-            {!camera.isActive
-              ? "Out of service"
-              : camera.status === "ONLINE"
-                ? camera.resolution
-                  ? `Open to watch · ${camera.resolution}`
-                  : "Open to watch"
-                : camera.lastSeenAt
-                  ? `Last seen ${new Date(camera.lastSeenAt).toLocaleDateString("en-IN")}`
-                  : "Never seen"}
-          </p>
-        </button>
+        <div className="flex items-start justify-between gap-2 p-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] text-muted-foreground">{camera.code}</span>
+              {/* Status is a dot and a word, never a dot alone. */}
+              <span className="flex items-center gap-1.5 text-[11px] font-medium">
+                <span
+                  className={cn("size-1.5 rounded-full", STATUS_STYLE[camera.status])}
+                  aria-hidden
+                />
+                {camera.isActive ? CAMERA_STATUS_LABELS[camera.status] : "Out of service"}
+              </span>
+            </div>
+            <p className="truncate text-sm font-medium leading-snug">{camera.label}</p>
+          </div>
 
-        <Can permission="camera.manage">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="absolute bottom-2 right-2 size-7 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
-                aria-label={`Actions for ${camera.code}`}
-              >
-                <MoreHorizontal className="size-4" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={onProbe} disabled={busy}>
-                <Zap className="size-4" aria-hidden />
-                {busy ? "Testing…" : "Test connection"}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onEdit}>
-                <Pencil className="size-4" aria-hidden />
-                Edit
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onSelect={onDelete}>
-                <Trash2 className="size-4" aria-hidden />
-                Remove
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </Can>
+          <Can permission="camera.manage">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 shrink-0"
+                  aria-label={`Actions for ${camera.code}`}
+                >
+                  <MoreHorizontal className="size-4" aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={onOpen}>
+                  <Maximize2 className="size-4" aria-hidden />
+                  Watch full screen
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onProbe} disabled={busy}>
+                  <Zap className="size-4" aria-hidden />
+                  {busy ? "Testing…" : "Test connection"}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onEdit}>
+                  <Pencil className="size-4" aria-hidden />
+                  Edit
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+                  <Trash2 className="size-4" aria-hidden />
+                  Remove
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </Can>
+        </div>
       </CardContent>
     </Card>
   );
@@ -610,17 +587,6 @@ function Figure({
         {value}
       </div>
       {hint ? <div className="text-xs text-muted-foreground">{hint}</div> : null}
-    </div>
-  );
-}
-
-function Detail({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="mt-0.5">{value}</dd>
     </div>
   );
 }

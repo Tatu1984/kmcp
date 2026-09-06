@@ -43,7 +43,23 @@ import { cn } from "@/lib/utils";
 
 type Transport = "HLS" | "WEBRTC";
 
-export function CameraPlayer({ camera, className }: { camera: ApiCamera; className?: string }) {
+export function CameraPlayer({
+  camera,
+  className,
+  /**
+   * A tile in a wall of cameras rather than the one somebody opened.
+   *
+   * Drops the transport switch, the reconnect button and the line of prose
+   * under the picture — on a grid of three they would be three sets of
+   * controls competing with the video, and the choice they offer is one you
+   * make about a camera you are actually watching. Full screen has them all.
+   */
+  compact = false,
+}: {
+  camera: ApiCamera;
+  className?: string;
+  compact?: boolean;
+}) {
   const [transport, setTransport] = React.useState<Transport>("HLS");
 
   const playback = useApiQuery(["camera", camera.id, "playback"], () =>
@@ -123,11 +139,12 @@ export function CameraPlayer({ camera, className }: { camera: ApiCamera; classNa
   return (
     <div className={cn("space-y-2", className)}>
       {transport === "HLS" ? (
-        <HlsVideo key={`hls-${data.hlsUrl}`} url={data.hlsUrl!} ready={data.ready} />
+        <HlsVideo key={`hls-${data.hlsUrl}`} url={data.hlsUrl!} ready={data.ready} compact={compact} />
       ) : (
-        <WhepVideo key={`whep-${data.webrtcUrl}`} url={data.webrtcUrl!} ready={data.ready} />
+        <WhepVideo key={`whep-${data.webrtcUrl}`} url={data.webrtcUrl!} ready={data.ready} compact={compact} />
       )}
 
+      {compact ? null : (
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">
           {transport === "HLS"
@@ -157,6 +174,7 @@ export function CameraPlayer({ camera, className }: { camera: ApiCamera; classNa
           </Button>
         </div>
       </div>
+      )}
     </div>
   );
 }
@@ -190,7 +208,7 @@ function Surface({
  * is a few hundred kilobytes, and every other screen in this portal would
  * otherwise carry it to show a table.
  */
-function HlsVideo({ url, ready }: { url: string; ready: boolean }) {
+function HlsVideo({ url, ready, compact }: { url: string; ready: boolean; compact?: boolean }) {
   const ref = React.useRef<HTMLVideoElement>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [waiting, setWaiting] = React.useState(!ready);
@@ -204,22 +222,37 @@ function HlsVideo({ url, ready }: { url: string; ready: boolean }) {
     setError(null);
     setWaiting(true);
 
-    // Safari and every iOS browser: native, and better than hls.js there.
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = url;
-      void video.play().catch(() => undefined);
-      return () => {
-        video.removeAttribute("src");
-        video.load();
-      };
-    }
-
+    /**
+     * hls.js first, native second, and that order is the whole fix for a bug
+     * this got wrong.
+     *
+     * The obvious test — `canPlayType("application/vnd.apple.mpegurl")` — is a
+     * trap. Chromium answers "maybe" and then cannot demux the stream: the
+     * element reached readyState 4 with `DEMUXER_ERROR_COULD_NOT_PARSE` on it,
+     * `play()` rejected with "the element has no supported sources", and the
+     * tile sat on a black frame at 0:00 looking exactly like a camera that was
+     * not sending anything.
+     *
+     * Media Source Extensions is the capability that actually matters, and
+     * `Hls.isSupported()` tests for it. Where it is missing — iOS, where every
+     * browser is Safari's engine and MSE is not offered — HLS plays natively,
+     * so that branch is the fallback rather than the fast path.
+     */
     void (async () => {
       try {
         const { default: Hls } = await import("hls.js");
         if (cancelled) return;
 
         if (!Hls.isSupported()) {
+          if (video.canPlayType("application/vnd.apple.mpegurl")) {
+            video.src = url;
+            void video.play().catch(() => undefined);
+            destroy = () => {
+              video.removeAttribute("src");
+              video.load();
+            };
+            return;
+          }
           setError("This browser cannot play the stream.");
           return;
         }
@@ -289,7 +322,23 @@ function HlsVideo({ url, ready }: { url: string; ready: boolean }) {
         muted
         playsInline
         autoPlay
-        controls
+        /**
+         * No scrub bar on a tile in a wall of three. It is a live stream, so
+         * the timeline means nothing, and the control strip covered a third of
+         * a picture somebody is trying to glance at. Full screen has controls,
+         * which is where anybody who wants them has gone.
+         */
+        controls={!compact}
+        /**
+         * Autoplay, tried more than once.
+         *
+         * `autoPlay` alone left tiles sitting on their first frame at 0:00: the
+         * gateway opens a camera on demand, so the element is attached long
+         * before there is anything to play, and the browser's own attempt has
+         * been and gone by the time data arrives. `canPlay` fires when there
+         * is, which is the moment worth asking again.
+         */
+        onCanPlay={(event) => void event.currentTarget.play().catch(() => undefined)}
         onPlaying={() => setWaiting(false)}
       />
     </Surface>
@@ -304,7 +353,7 @@ function HlsVideo({ url, ready }: { url: string; ready: boolean }) {
  * No library, no socket, no dependency — the whole client is the forty lines
  * below, which is why the low-latency path is worth offering at all.
  */
-function WhepVideo({ url, ready }: { url: string; ready: boolean }) {
+function WhepVideo({ url, ready, compact }: { url: string; ready: boolean; compact?: boolean }) {
   const ref = React.useRef<HTMLVideoElement>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [waiting, setWaiting] = React.useState(!ready);
@@ -387,7 +436,16 @@ function WhepVideo({ url, ready }: { url: string; ready: boolean }) {
             : undefined
       }
     >
-      <video ref={ref} className="size-full object-contain" muted playsInline autoPlay controls />
+      <video
+        ref={ref}
+        className="size-full object-contain"
+        muted
+        playsInline
+        autoPlay
+        controls={!compact}
+        onCanPlay={(event) => void event.currentTarget.play().catch(() => undefined)}
+        onPlaying={() => setWaiting(false)}
+      />
     </Surface>
   );
 }
