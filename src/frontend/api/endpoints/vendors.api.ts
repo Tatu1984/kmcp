@@ -39,7 +39,26 @@ export interface ApiVendorDocument {
   createdAt: string;
 }
 
+/** What `GET /vendors/dashboard` answers for the signed-in vendor. */
+export interface ApiVendorDashboard {
+  activeParking: number;
+  sessionsToday: number;
+  /** Paise. */
+  cashToday: number;
+  digitalToday: number;
+  collectedToday: number;
+  /** Approved or awaiting approval, not yet paid out. Paise. */
+  settlementDue: number;
+  openShifts: number;
+}
+
 export const vendorsApi = {
+  /**
+   * The vendor's own figures. Scoped by the API to the caller's vendor and
+   * refused outright to an account that is not one, so there is no id to pass.
+   */
+  dashboard: () => api.get<ApiVendorDashboard>("/vendors/dashboard"),
+
   list: (query: Query = {}): Promise<ApiResult<ApiVendor[]>> =>
     api.get<ApiVendor[]>("/vendors", { query }),
 
