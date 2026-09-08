@@ -199,6 +199,8 @@ export function ZoneFormSheet({
                 <Label htmlFor="zone-street">Street / road</Label>
                 <Input
                   id="zone-street"
+                  name="zone-street"
+                  autoComplete="off"
                   value={form.streetName}
                   onChange={(e) => setForm({ ...form, streetName: e.target.value })}
                   placeholder="Park Street"

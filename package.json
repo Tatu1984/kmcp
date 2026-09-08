@@ -15,7 +15,7 @@
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:seed": "tsx src/backend/database/seed.ts",
-    "postinstall": "prisma generate",
+    "postinstall": "prisma generate && patch-package",
     "check:demo-data": "node scripts/check-demo-data.mjs"
   },
   "dependencies": {
@@ -67,6 +67,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "jsdom": "^30.0.1",
+    "patch-package": "^8.0.1",
     "prisma": "^7.9.1",
     "tailwindcss": "^4",
     "typescript": "^5",
