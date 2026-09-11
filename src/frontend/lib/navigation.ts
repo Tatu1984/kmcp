@@ -4,6 +4,7 @@ import {
   BookOpen,
   Building2,
   CalendarClock,
+  Cctv,
   CircleParking,
   ClipboardList,
   Coins,
@@ -23,7 +24,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { ROUTES } from "@/shared/constants/routes";
-import type { PermissionKey } from "@/shared/constants/roles";
+import type { PermissionKey, Role } from "@/shared/constants/roles";
 
 export type NavItem = {
   label: string;
@@ -52,6 +53,13 @@ export type NavItem = {
    * accounts and the RBAC matrix (`user.manage`).
    */
   permissions?: PermissionKey[];
+  /**
+   * Restrict a destination to specific roles, checked against the signed-in
+   * account's role rather than a permission. Used where sight of a screen is a
+   * role decision, not an editable grant — the live cameras are administrators
+   * only, and there is no `camera.*` permission to gate on.
+   */
+  roles?: Role[];
 };
 
 /**
@@ -62,6 +70,8 @@ export type NavItem = {
 export type PermissionCheck = {
   can: (permission: PermissionKey) => boolean;
   canAny: (...permissions: PermissionKey[]) => boolean;
+  /** The signed-in account's role, for role-gated destinations. */
+  role?: Role;
 };
 
 export type NavGroup = {
@@ -120,6 +130,17 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: Map,
         description: "Civic divisions zones and streets belong to",
         keywords: ["division", "geography", "street", "boundary"],
+      },
+      {
+        label: "Cameras",
+        href: ROUTES.cameras,
+        icon: Cctv,
+        description: "Live CCTV from the Edge Agent",
+        // Administrators only, by role. There is no camera permission to gate
+        // on — sight of a live street is an admin decision, and the API agrees
+        // (every /cameras route is @Roles("SUPER_ADMIN","ADMIN")).
+        roles: ["SUPER_ADMIN", "ADMIN"],
+        keywords: ["cctv", "camera", "video", "stream", "surveillance", "live"],
       },
       {
         label: "Incidents",
@@ -278,6 +299,10 @@ export const ALL_NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
 /** Whether this account may open a destination at all. */
 export function mayOpen(item: NavItem, perms: PermissionCheck): boolean {
+  // A role-gated destination is hidden until the role is known and matches.
+  if (item.roles?.length) {
+    return perms.role !== undefined && item.roles.includes(perms.role);
+  }
   if (item.permissions?.length) return perms.canAny(...item.permissions);
   return item.permission ? perms.can(item.permission) : true;
 }

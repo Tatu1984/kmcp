@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useSession } from "@/frontend/hooks/use-session";
-import { ALL_PERMISSIONS, type PermissionKey } from "@/shared/constants/roles";
+import { ALL_PERMISSIONS, ROLES, type PermissionKey, type Role } from "@/shared/constants/roles";
 import { isLiveApi } from "@/config/env";
 
 /**
@@ -38,6 +38,8 @@ export interface Permissions {
   zoneIds: string[];
   /** Everything granted, for the rare screen that wants to display it. */
   granted: readonly PermissionKey[];
+  /** The account's role, for the few destinations gated by role not permission. */
+  role?: Role;
 }
 
 export function usePermissions(): Permissions {
@@ -53,6 +55,7 @@ export function usePermissions(): Permissions {
         isZoneScoped: false,
         zoneIds: [],
         granted: ALL_PERMISSIONS,
+        role: ROLES.SUPER_ADMIN,
       };
     }
 
@@ -70,6 +73,7 @@ export function usePermissions(): Permissions {
       isZoneScoped: user?.isZoneScoped ?? false,
       zoneIds: user?.zoneIds ?? [],
       granted: (granted ?? []) as readonly PermissionKey[],
+      role: user?.role as Role | undefined,
     };
   }, [user, isLoading]);
 }
