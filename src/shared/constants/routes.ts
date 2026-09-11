@@ -10,8 +10,6 @@ export const ROUTES = {
   zone: (id: string) => `/zones/${id}`,
   slots: "/slots",
   wards: "/wards",
-  cameras: "/cameras",
-  camera: (id: string) => `/cameras/${id}`,
 
   sessions: "/sessions",
   session: (id: string) => `/sessions/${id}`,
