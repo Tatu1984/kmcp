@@ -27,8 +27,10 @@ export function CamerasView() {
   const query = useApiQuery<ApiCamera[]>(
     ["cameras"],
     async () => (await camerasApi.list()).data,
-    // The picture is live; re-read status every few seconds.
-    { refetchInterval: 5000 },
+    // Re-read status periodically. The list reads the R2 playlist per camera,
+    // so keep this gentle — the live picture itself comes from the per-tile
+    // player, not this poll.
+    { refetchInterval: 12000, refetchOnWindowFocus: false },
   );
 
   const cameras = query.data ?? [];
