@@ -83,7 +83,13 @@ export default function HlsPlayer({ src, active, autoPlay = true, className, onE
           lowLatencyMode: true,
           backBufferLength: 10,
           maxBufferLength: 15,
-          liveSyncDurationCount: 3,
+          // Stay near the live edge so the player never drifts back far enough
+          // to request a segment the origin has already deleted (a 404 + stall).
+          // The Edge Agent keeps a ~20s window plus a few extra segments; these
+          // keep the player comfortably inside it.
+          liveSyncDuration: 6,
+          liveMaxLatencyDuration: 20,
+          maxLiveSyncPlaybackRate: 1.5,
           manifestLoadingTimeOut: 8000,
           fragLoadingMaxRetry: 6,
           manifestLoadingMaxRetry: 4,
