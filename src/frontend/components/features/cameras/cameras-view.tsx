@@ -24,13 +24,18 @@ const STATUS_TONE: Record<CameraStatus, { label: string; className: string }> = 
 };
 
 export function CamerasView() {
+  // While the register dialog is open, pause the background poll. A refetch that
+  // lands mid-flow flips the empty-state view to the grid and unmounts the
+  // dialog — closing the one-time token panel before it can be copied.
+  const [dialogOpen, setDialogOpen] = React.useState(false);
+
   const query = useApiQuery<ApiCamera[]>(
     ["cameras"],
     async () => (await camerasApi.list()).data,
     // Re-read status periodically. The list reads the R2 playlist per camera,
     // so keep this gentle — the live picture itself comes from the per-tile
     // player, not this poll.
-    { refetchInterval: 12000, refetchOnWindowFocus: false },
+    { refetchInterval: dialogOpen ? false : 12000, refetchOnWindowFocus: false },
   );
 
   const cameras = query.data ?? [];
@@ -61,7 +66,7 @@ export function CamerasView() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      <Header onCreated={() => void query.refetch()} />
+      <Header onCreated={() => void query.refetch()} onDialogOpenChange={setDialogOpen} />
 
       {query.isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -81,7 +86,9 @@ export function CamerasView() {
           icon={Cctv}
           title="No cameras yet"
           description="Register a camera to get an ingest URL and token for the Edge Agent."
-          action={<AddCameraDialog onCreated={() => void query.refetch()} />}
+          action={
+            <AddCameraDialog onCreated={() => void query.refetch()} onOpenChange={setDialogOpen} />
+          }
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -94,14 +101,20 @@ export function CamerasView() {
   );
 }
 
-function Header({ onCreated }: { onCreated: () => void }) {
+function Header({
+  onCreated,
+  onDialogOpenChange,
+}: {
+  onCreated: () => void;
+  onDialogOpenChange?: (open: boolean) => void;
+}) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h1 className="text-xl font-semibold">Cameras</h1>
         <p className="text-sm text-muted-foreground">Live CCTV pushed in from the Edge Agent.</p>
       </div>
-      {isLiveApi && <AddCameraDialog onCreated={onCreated} />}
+      {isLiveApi && <AddCameraDialog onCreated={onCreated} onOpenChange={onDialogOpenChange} />}
     </div>
   );
 }

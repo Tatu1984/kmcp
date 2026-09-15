@@ -37,8 +37,13 @@ export default function HlsPlayer({ src, active, autoPlay = true, className, onE
     const video = videoRef.current;
     if (!video) return;
     let cancelled = false;
+    // Set once the player is attached; removes listeners registered outside the
+    // video element (which teardown alone would leave behind).
+    let cleanupExtra: (() => void) | null = null;
 
     const teardown = () => {
+      cleanupExtra?.();
+      cleanupExtra = null;
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -99,20 +104,61 @@ export default function HlsPlayer({ src, active, autoPlay = true, className, onE
           },
         });
         hlsRef.current = hls;
+
+        /*
+         * Jump to the live edge.
+         *
+         * This is a surveillance wall, not a film: the only moment worth showing
+         * is now. Left alone a live player drifts backwards — every stall, tab
+         * throttle or recovered network error resumes from where playback
+         * stopped rather than from the present, and those setbacks accumulate
+         * until the tile is minutes behind while still claiming to be live.
+         * Seeking forward loses footage the operator was not watching anyway;
+         * falling behind loses the footage they are.
+         */
+        const seekToLive = () => {
+          const target = hls.liveSyncPosition;
+          if (typeof target === "number" && Number.isFinite(target)) {
+            if (video.currentTime < target - 1) video.currentTime = target;
+            return;
+          }
+          // No live-sync position yet (early, or a short playlist): fall back to
+          // the far end of whatever is buffered.
+          const end = video.seekable.length ? video.seekable.end(video.seekable.length - 1) : 0;
+          if (end > 0 && video.currentTime < end - 1) video.currentTime = end;
+        };
+
         hls.attachMedia(video);
         hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(src));
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           if (autoPlay) video.play().catch(() => {});
         });
         video.addEventListener("playing", () => setStatus("playing"));
+
+        // A stall is the usual way a tile slips into the past: playback halts,
+        // the stream keeps advancing, and resuming where it left off is already
+        // behind. Re-join at the edge instead.
+        video.addEventListener("stalled", seekToLive);
+        video.addEventListener("waiting", seekToLive);
+
         hls.on(Hls.Events.ERROR, (_evt: unknown, data: { fatal: boolean; type: string; details: string }) => {
-          if (!data.fatal) return;
+          // Recoverable buffer stalls are reported as non-fatal; they are still
+          // exactly the moment to re-join the live edge.
+          if (!data.fatal) {
+            if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) seekToLive();
+            return;
+          }
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
+              // startLoad() resumes from the last position, which after an
+              // outage is stale by however long the outage lasted. Restart at
+              // the live edge so a blip costs a gap, not a permanent lag.
               hls.startLoad();
+              seekToLive();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
               hls.recoverMediaError();
+              seekToLive();
               break;
             default:
               setStatus("error");
@@ -120,6 +166,14 @@ export default function HlsPlayer({ src, active, autoPlay = true, className, onE
               teardown();
           }
         });
+
+        // A backgrounded tab is throttled hard; on return the player can be far
+        // behind with a full buffer and no error to prompt a recovery.
+        const onVisible = () => {
+          if (document.visibilityState === "visible") seekToLive();
+        };
+        document.addEventListener("visibilitychange", onVisible);
+        cleanupExtra = () => document.removeEventListener("visibilitychange", onVisible);
         return;
       }
 

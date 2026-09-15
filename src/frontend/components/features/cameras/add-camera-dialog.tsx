@@ -24,18 +24,32 @@ import { ApiError } from "@/frontend/api/client";
  * The ingest token is shown here and never again — only its hash is stored — so
  * the panel makes copying it the obvious next step and warns before it closes.
  */
-export function AddCameraDialog({ onCreated }: { onCreated: () => void }) {
+export function AddCameraDialog({
+  onCreated,
+  onOpenChange,
+}: {
+  onCreated: () => void;
+  /** Notified when the dialog opens/closes, so the parent can pause polling. */
+  onOpenChange?: (open: boolean) => void;
+}) {
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState("");
   const [group, setGroup] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [issued, setIssued] = React.useState<EdgeAgentConfig | null>(null);
+  // Whether a camera was created this open. The list refresh is deferred until
+  // the dialog CLOSES, not fired on success: refreshing while the credentials
+  // panel is open re-renders the parent, which swaps the empty-state view for
+  // the grid and unmounts this dialog — closing the one-time token panel before
+  // the operator can copy it.
+  const createdRef = React.useRef(false);
 
   const reset = () => {
     setName("");
     setGroup("");
     setIssued(null);
     setBusy(false);
+    createdRef.current = false;
   };
 
   const submit = async (e: React.FormEvent) => {
@@ -45,7 +59,7 @@ export function AddCameraDialog({ onCreated }: { onCreated: () => void }) {
     try {
       const { data } = await camerasApi.create({ name: name.trim(), group: group.trim() || undefined });
       setIssued(data.edgeAgent);
-      onCreated();
+      createdRef.current = true;
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : "Could not register the camera";
       toast.error(msg);
@@ -59,7 +73,12 @@ export function AddCameraDialog({ onCreated }: { onCreated: () => void }) {
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) reset();
+        onOpenChange?.(next);
+        if (!next) {
+          // Refresh the list now that the operator is done with the token panel.
+          if (createdRef.current) onCreated();
+          reset();
+        }
       }}
     >
       <DialogTrigger asChild>
