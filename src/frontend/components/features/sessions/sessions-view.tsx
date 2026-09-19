@@ -22,8 +22,11 @@ import {
   Square,
 } from "lucide-react";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import { Button } from "@/frontend/components/ui/button";
 import { Badge } from "@/frontend/components/ui/badge";
+import { Switch } from "@/frontend/components/ui/switch";
+import { Label } from "@/frontend/components/ui/label";
 import { PageHeader } from "@/frontend/components/shared/page-header";
 import { StartSessionSheet, type StartSessionDraft } from "./start-session-sheet";
 import { StatCard } from "@/frontend/components/shared/stat-card";
@@ -32,6 +35,7 @@ import { RowActions } from "@/frontend/components/shared/row-actions";
 import { Can } from "@/frontend/components/shared/can";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, Plate } from "@/frontend/components/shared/bits";
+import { ElapsedTime, LiveClockProvider } from "@/frontend/components/shared/live-clock";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
 import { SessionDetailSheet } from "./session-detail-sheet";
 import {
@@ -49,10 +53,17 @@ import {
   channelLabel,
   type MessageChannel,
 } from "@/frontend/api";
-import { useResource } from "@/frontend/hooks/use-api";
+import { useApiQuery, useResource } from "@/frontend/hooks/use-api";
 import { useMessaging } from "@/frontend/hooks/use-messaging";
 import { useDocument } from "@/frontend/hooks/use-document";
 import { isLiveApi } from "@/config/env";
+import {
+  LIST_POLL_MS,
+  LIVE_COUNTS_POLL_MS,
+  isSessionLive,
+  overstayingNow,
+  runningNow,
+} from "@/frontend/lib/live";
 import { toSession } from "@/frontend/lib/adapters";
 import { downloadCsv } from "@/frontend/lib/csv";
 import { ROUTES } from "@/shared/constants/routes";
@@ -73,6 +84,24 @@ const CHANNELS: { channel: MessageChannel; label: string }[] = [
 
 export function SessionsView() {
   const params = useSearchParams();
+
+  /**
+   * Whether the screen keeps asking.
+   *
+   * On by default, because a page called "Live sessions" that never updates is
+   * the bug this replaces — the query had no `refetchInterval` and a running
+   * row showed a static chip that read "running" for as long as the tab stayed
+   * open. Behind a switch, because polling forever is not free: it keeps a
+   * laptop awake on a wall display and an officer reading one row does not need
+   * the table moving under them.
+   *
+   * Off in demo mode and not offered there: with no API there is nothing to
+   * re-fetch, and a "Live" pill over a fixed dataset is a claim the screen
+   * cannot honour. The clock still ticks — the demo's own durations are real
+   * timestamps and counting them up is honest.
+   */
+  const [polling, setPolling] = React.useState(true);
+
   const {
     items: sessions,
     isLoading,
@@ -87,7 +116,22 @@ export function SessionsView() {
         r.map(toSession),
       ),
     SESSIONS,
+    { refetchInterval: polling ? LIST_POLL_MS : false },
   );
+
+  /**
+   * The authoritative counts, straight from the database.
+   *
+   * Separate from the list on purpose. The tiles above this table used to
+   * filter whatever page had loaded, which made "Running now" a count of the
+   * first twenty-five rows rather than of the city — wrong by an order of
+   * magnitude on a busy afternoon, and wrong in the reassuring direction. This
+   * one request answers it properly, and carries the overstay threshold the
+   * sweep is actually running on so the caption cannot drift from the rule.
+   */
+  const live = useApiQuery(["sessions", "live"], () => sessionsApi.live().then((r) => r.data), {
+    refetchInterval: polling ? LIVE_COUNTS_POLL_MS : false,
+  });
   const [selected, setSelected] = React.useState<ParkingSession | null>(null);
   const [sheetOpen, setSheetOpen] = React.useState(false);
   // The subject outlives the open flag on purpose: clearing it on close would
@@ -271,19 +315,51 @@ export function SessionsView() {
       },
       {
         id: "duration",
-        accessorFn: (s) => s.durationMinutes ?? 0,
+        accessorFn: (s) => s.durationMinutes ?? s.elapsedMinutes ?? 0,
         header: "Duration",
         meta: "Duration",
-        cell: ({ row }) =>
-          row.original.durationMinutes ? (
-            <span className="text-sm whitespace-nowrap tabular">
-              {formatDuration(row.original.durationMinutes)}
+        /**
+         * Counts up for a vehicle that is still there, and stops for one that
+         * has gone.
+         *
+         * The old cell branched on whether `durationMinutes` was set, which
+         * stopped being the right question once the adapter started carrying
+         * the server's `elapsedMinutes`: a running session now *has* a
+         * duration, so every live row rendered a frozen figure that looked
+         * like a final one. The status is the thing that says whether a vehicle
+         * is still in the bay, so that is what this asks.
+         *
+         * `ElapsedTime` reads one clock shared by the whole table — see
+         * `live-clock.tsx` — rather than starting a timer of its own per row.
+         */
+        cell: ({ row }) => {
+          const session = row.original;
+          if (!isSessionLive(session.status)) {
+            return (
+              <span className="text-sm whitespace-nowrap tabular">
+                {session.durationMinutes !== undefined
+                  ? formatDuration(session.durationMinutes)
+                  : "—"}
+              </span>
+            );
+          }
+          return (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 text-sm whitespace-nowrap",
+                session.isOverstay
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-sky-600 dark:text-sky-400",
+              )}
+            >
+              <Clock className="size-3.5 shrink-0" />
+              <ElapsedTime
+                startAt={session.startAt}
+                fallbackMinutes={session.elapsedMinutes ?? session.durationMinutes}
+              />
             </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-sm whitespace-nowrap text-sky-600 dark:text-sky-400">
-              <Clock className="size-3.5" /> running
-            </span>
-          ),
+          );
+        },
       },
       {
         accessorKey: "payableAmount",
@@ -441,8 +517,16 @@ export function SessionsView() {
     [resendReceipt, downloadReceipt, apply],
   );
 
-  const activeCount = data.filter((s) => s.status === "ACTIVE").length;
-  const overstayCount = data.filter((s) => s.isOverstay).length;
+  /**
+   * The two live figures come from the server; the two historic ones are
+   * counted here, and correctly so — "completed but unpaid" and "synced from
+   * offline" are questions about the rows on screen, and the API offers no
+   * counter for either. The tiles say which is which rather than presenting
+   * four numbers of apparently equal authority.
+   */
+  const running = runningNow(live.data, sessions, zoneFilter);
+  const overstay = overstayingNow(live.data, sessions, zoneFilter);
+  const overstayAfterMinutes = live.data?.overstayAfterMinutes;
   const unpaid = data.filter((s) => s.status === "COMPLETED" && !s.paid).length;
   const offlineSynced = data.filter((s) => s.source === "OFFLINE_SYNC").length;
 
@@ -465,6 +549,28 @@ export function SessionsView() {
         }
         actions={
           <>
+            {/* The same control the dashboard's activity feed carries, doing
+                the same thing: stopping the polling rather than hiding it.
+                Absent without an API, where there is nothing to poll. */}
+            {isLiveApi && (
+              <div className="flex items-center gap-2 pr-1">
+                <span className="relative flex size-2" aria-hidden>
+                  {polling && (
+                    <span className="absolute inline-flex size-full animate-pulse-ring rounded-full bg-emerald-500" />
+                  )}
+                  <span
+                    className={cn(
+                      "relative inline-flex size-2 rounded-full",
+                      polling ? "bg-emerald-500" : "bg-muted-foreground/50",
+                    )}
+                  />
+                </span>
+                <Label htmlFor="sessions-live" className="text-xs text-muted-foreground">
+                  {polling ? "Live" : "Paused"}
+                </Label>
+                <Switch id="sessions-live" checked={polling} onCheckedChange={setPolling} />
+              </div>
+            )}
             <Button variant="outline" size="sm" className="h-9" asChild>
               <Link href={`${ROUTES.sessions}?status=OVERSTAY`}>
                 <TriangleAlert className="size-4" /> Overstays
@@ -486,15 +592,35 @@ export function SessionsView() {
 
       <FadeStagger className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <FadeStaggerItem>
-          <StatCard label="Running now" numeric={activeCount} icon={Activity} accent="info" hint="Vehicles currently parked" />
+          <StatCard
+            label="Running now"
+            numeric={running.value}
+            icon={Activity}
+            accent="info"
+            hint={
+              running.fromServer
+                ? zoneFilter
+                  ? "Counted by the API, for this zone"
+                  : "Counted by the API across the network"
+                : "Counted from the rows loaded here"
+            }
+          />
         </FadeStaggerItem>
         <FadeStaggerItem>
           <StatCard
             label="Past expected duration"
-            numeric={overstayCount}
+            numeric={overstay.value}
             icon={TriangleAlert}
-            accent={overstayCount > 6 ? "danger" : "warning"}
-            hint="Overstay penalty applies at exit"
+            accent={overstay.value > 6 ? "danger" : "warning"}
+            hint={
+              /* The threshold is a runtime setting, so it is quoted from the
+                 API rather than written into this sentence. */
+              overstayAfterMinutes !== undefined && overstay.fromServer
+                ? `Parked over ${formatDuration(overstayAfterMinutes)} · penalty applies at exit`
+                : overstay.fromServer
+                  ? "Overstay penalty applies at exit"
+                  : "Counted from the rows loaded here"
+            }
           />
         </FadeStaggerItem>
         <FadeStaggerItem>
@@ -516,6 +642,16 @@ export function SessionsView() {
         </FadeStaggerItem>
       </FadeStagger>
 
+      {/**
+       * One clock for the whole table.
+       *
+       * Wrapped here rather than around the screen because this is the only
+       * part of it that ticks: the tiles above are counts, and the detail sheet
+       * below carries a clock of its own so it works wherever it is opened
+       * from. Every running Duration cell reads this one value, so twenty-five
+       * rows share a single interval and cannot drift apart by a minute.
+       */}
+      <LiveClockProvider>
       <DataTable
         data={data}
         columns={columns}
@@ -617,6 +753,7 @@ export function SessionsView() {
           emptyReason ?? "Sessions appear here the moment an attendant starts one at the kerb."
         }
       />
+      </LiveClockProvider>
 
       <SessionDetailSheet
         session={selected}
@@ -648,11 +785,22 @@ export function SessionsView() {
         busy={starting}
         onStart={(draft: StartSessionDraft) => {
           setStarting(true);
-          void apply(
+          /**
+           * The promise is returned rather than swallowed, so the sheet can
+           * keep the server's reason beside the field that caused it and drop a
+           * bay the server would not take. `apply` has already reported the
+           * failure as a toast and re-thrown; nothing here needs to catch it,
+           * and catching it would hide the rejection from the sheet.
+           */
+          return apply(
             () =>
               sessionsApi.start({
                 clientEventId: draft.clientEventId,
                 zoneId: draft.zoneId,
+                // The bay, when the officer allocated one. Omitted rather than
+                // sent as undefined-shaped noise when they did not — a session
+                // without a bay is a legitimate session.
+                ...(draft.slotId ? { slotId: draft.slotId } : {}),
                 plateNumber: draft.plateNumber,
                 vehicleType: draft.vehicleType,
                 source: "ADMIN_PORTAL",
@@ -662,11 +810,12 @@ export function SessionsView() {
             (list) => list,
             {
               success: "Session started",
-              description: `${draft.plateNumber} · ${draft.zoneName} — the meter is running.`,
+              description: draft.slotCode
+                ? `${draft.plateNumber} · ${draft.zoneName}, bay ${draft.slotCode} — the meter is running.`
+                : `${draft.plateNumber} · ${draft.zoneName} — the meter is running.`,
             },
           )
             .then(() => setStartOpen(false))
-            .catch(() => undefined)
             .finally(() => setStarting(false));
         }}
       />

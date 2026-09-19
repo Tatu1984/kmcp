@@ -122,6 +122,24 @@ export const NAV_GROUPS: NavGroup[] = [
         keywords: ["bay", "ev", "accessible", "reserved"],
       },
       {
+        label: "Bay board",
+        href: ROUTES.bayBoard,
+        /**
+         * `session.read`, not the `zone.read` its neighbour carries.
+         *
+         * The screen is a join of `GET /slots` (`zone.read`) and `GET /sessions`
+         * (`session.read`), and it is worthless without the second: bays with
+         * no occupants is what the Slots map already shows. So it is gated on
+         * the grant that makes it a board at all. `permissions` would be wrong
+         * here — that is an any-of check, and an account with only `zone.read`
+         * would be let in to a screen whose every tile would read empty.
+         */
+        permission: "session.read",
+        icon: CircleParking,
+        description: "Which bay holds which vehicle, and for how long",
+        keywords: ["bay", "occupancy", "board", "parked", "vehicle", "plate", "live"],
+      },
+      {
         label: "Wards",
         href: ROUTES.wards,
         // Wards only exist to scope zones, so they answer to the same

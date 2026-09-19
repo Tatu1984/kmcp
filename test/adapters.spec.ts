@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  toFareBreakdown,
   toReportSchedule,
   toShift,
   toSession,
@@ -134,20 +135,21 @@ describe("a shift", () => {
   });
 });
 
-describe("a parking session", () => {
-  const session = {
-    id: "sess-1",
-    code: "S-0001",
-    plateNumber: "KA01AB1234",
-    zoneId: "zone-1",
-    status: "ACTIVE",
-    source: "ATTENDANT",
-    startAt: "2026-02-01T05:00:00.000Z",
-    discountAmount: 0,
-    taxAmount: 0,
-    penaltyAmount: 0,
-  } as unknown as ApiSession;
+/** Shared by the two blocks below: a bare running session, as the list sends it. */
+const session = {
+  id: "sess-1",
+  code: "S-0001",
+  plateNumber: "KA01AB1234",
+  zoneId: "zone-1",
+  status: "ACTIVE",
+  source: "ATTENDANT",
+  startAt: "2026-02-01T05:00:00.000Z",
+  discountAmount: 0,
+  taxAmount: 0,
+  penaltyAmount: 0,
+} as unknown as ApiSession;
 
+describe("a parking session", () => {
   it("does not claim a session is unpaid when payment state is unknown", () => {
     const view = toSession(session);
 
@@ -165,6 +167,172 @@ describe("a parking session", () => {
       .durationMinutes).toBe(90);
     expect(toSession({ ...session, elapsedMinutes: 12 } as ApiSession).durationMinutes).toBe(12);
     expect(toSession(session).durationMinutes).toBeUndefined();
+  });
+
+  it("carries the bay, which is the only thing that joins a session to one", () => {
+    /**
+     * `slotId` is the whole basis of the bay board. The adapter used to drop
+     * it and keep only `slot.code`, which is a label and not a key: bay codes
+     * repeat across zones, so a screen holding codes cannot tell which of the
+     * four bays called C07 a vehicle is standing in. Both are kept — the id to
+     * join on, the code to print.
+     */
+    const view = toSession({
+      ...session,
+      slotId: "slot-7",
+      slot: { id: "slot-7", code: "C07" },
+    } as ApiSession);
+
+    expect(view.slotId).toBe("slot-7");
+    expect(view.slotCode).toBe("C07");
+  });
+
+  it("leaves a session with no bay absent rather than inventing one", () => {
+    // Not a gap in the data: `slotId` is optional on the start endpoint, and a
+    // zone priced for more vehicles than it has marked-out bays produces these
+    // routinely. The board counts them separately instead of losing them.
+    const view = toSession({ ...session, slotId: null } as ApiSession);
+
+    expect(view.slotId).toBeUndefined();
+    expect(view.slotCode).toBeUndefined();
+  });
+
+  it("keeps the elapsed figure as well as the collapsed one", () => {
+    /**
+     * `durationMinutes` on the view is deliberately the collapse of the two,
+     * because a table cell wants one number. That collapse is also what froze
+     * every live row: once the API began reporting an elapsed time, a running
+     * session *had* a duration, and "is it set" stopped meaning "has it
+     * finished". Both figures are carried so the decision to tick can be made
+     * on `status`, which is the only field that knows.
+     */
+    const running = toSession({ ...session, elapsedMinutes: 42 } as ApiSession);
+
+    expect(running.elapsedMinutes).toBe(42);
+    expect(running.durationMinutes).toBe(42);
+    expect(running.status).toBe("ACTIVE");
+  });
+
+  it("carries the vendor and attendant ids behind the display names", () => {
+    // The names are for reading; the ids are for filtering and linking. Two
+    // operators can share a contact name, so matching on one is not an option.
+    const view = toSession({
+      ...session,
+      vendorId: "ven-1",
+      attendantId: "att-9",
+    } as ApiSession);
+
+    expect(view.vendorId).toBe("ven-1");
+    expect(view.attendantId).toBe("att-9");
+  });
+});
+
+describe("a stored fare breakdown", () => {
+  /**
+   * `fareBreakdown` is a JSON column, which means nothing enforces its shape on
+   * the way out of the database — a type annotation on it is a promise about
+   * the code that wrote the row, not about the row. Rows predate fields, and a
+   * session ended by an older deployment is still in the table.
+   *
+   * So the adapter checks the fields the Fare tab actually renders. The tab
+   * maps over `lines` and labels a percentage from `taxPercent`; handed
+   * something else it would throw inside a sheet or print "Tax (undefined%)".
+   * Rejecting the breakdown is the safe outcome, because the four flat totals
+   * on the session row are still there to fall back to.
+   */
+  const quote = {
+    tariffId: "trf-1",
+    tariffName: "City Standard — Car",
+    tariffVersion: 3,
+    durationMinutes: 95,
+    chargeableMinutes: 85,
+    gracePeriodMin: 10,
+    lines: [{ label: "First hour", code: "BASE", amount: 2000 }],
+    grossAmount: 2000,
+    discountAmount: 0,
+    penaltyAmount: 0,
+    taxAmount: 360,
+    taxPercent: 18,
+    payableAmount: 2360,
+    cappedByDailyLimit: false,
+    waivedByPass: false,
+  };
+
+  it("passes a breakdown the screen can actually render", () => {
+    expect(toFareBreakdown(quote)).toEqual(quote);
+  });
+
+  it("accepts a stay priced at nothing, which has no lines to itemise", () => {
+    // A vehicle back inside the grace period is charged nothing and the server
+    // itemises nothing. An empty `lines` is a real answer; only a missing or
+    // malformed one is a broken row.
+    expect(toFareBreakdown({ ...quote, lines: [] })).not.toBeUndefined();
+  });
+
+  it("rejects a breakdown with no lines array to map over", () => {
+    expect(toFareBreakdown({ ...quote, lines: undefined })).toBeUndefined();
+    expect(toFareBreakdown({ ...quote, lines: "BASE 2000" })).toBeUndefined();
+  });
+
+  it("rejects a line that is not a label and an amount", () => {
+    // The card renders `line.label` and formats `line.amount` as money. A line
+    // missing either renders as an empty row against "₹NaN".
+    expect(toFareBreakdown({ ...quote, lines: [{ code: "BASE", amount: 2000 }] })).toBeUndefined();
+    expect(
+      toFareBreakdown({ ...quote, lines: [{ label: "First hour", code: "BASE" }] }),
+    ).toBeUndefined();
+  });
+
+  it("rejects a breakdown with no tax percentage to label the tax with", () => {
+    /**
+     * The reason this guard exists at all. The Fare tab used to print
+     * "GST (18%)" as a literal beside a figure the server had computed from
+     * whatever the rate card said. Reading the real percentage fixes that only
+     * if the percentage is actually there — otherwise the label becomes
+     * "Tax (undefined%)", which is a worse lie than the hardcoded one.
+     */
+    expect(toFareBreakdown({ ...quote, taxPercent: undefined })).toBeUndefined();
+    expect(toFareBreakdown({ ...quote, taxPercent: null })).toBeUndefined();
+  });
+
+  it("rejects a breakdown with no total, and one with a total that is not a number", () => {
+    expect(toFareBreakdown({ ...quote, payableAmount: undefined })).toBeUndefined();
+    expect(toFareBreakdown({ ...quote, payableAmount: "2360" })).toBeUndefined();
+    expect(toFareBreakdown({ ...quote, payableAmount: Number.NaN })).toBeUndefined();
+  });
+
+  it("rejects the durations the grace explanation is derived from", () => {
+    // The card subtracts one from the other to say how much of the stay was
+    // free. Missing either turns that sentence into "NaN minutes were not
+    // charged" — on the tab a citizen disputing a charge is looking at.
+    expect(toFareBreakdown({ ...quote, chargeableMinutes: undefined })).toBeUndefined();
+    expect(toFareBreakdown({ ...quote, durationMinutes: undefined })).toBeUndefined();
+    expect(toFareBreakdown({ ...quote, gracePeriodMin: undefined })).toBeUndefined();
+  });
+
+  it("ignores the fields nobody renders", () => {
+    /**
+     * `tariffVersion` is not checked on purpose. It is never displayed — the
+     * server fills it from `tariff.priority`, so it is not a version at all —
+     * and refusing an otherwise perfectly renderable breakdown over a field no
+     * screen reads would hide a working fare behind a fallback.
+     */
+    expect(toFareBreakdown({ ...quote, tariffVersion: undefined })).not.toBeUndefined();
+  });
+
+  it("treats a null or absent breakdown as simply not priced yet", () => {
+    // What every running session carries, and every cancelled one: the API
+    // writes the breakdown in `end()` and nowhere else.
+    expect(toFareBreakdown(null)).toBeUndefined();
+    expect(toFareBreakdown(undefined)).toBeUndefined();
+    expect(toFareBreakdown("{}")).toBeUndefined();
+  });
+
+  it("reaches the session view, which is the point of all of the above", () => {
+    expect(toSession({ ...session, fareBreakdown: quote } as unknown as ApiSession).fareBreakdown)
+      .toEqual(quote);
+    expect(toSession({ ...session, fareBreakdown: { lines: [] } } as unknown as ApiSession)
+      .fareBreakdown).toBeUndefined();
   });
 });
 

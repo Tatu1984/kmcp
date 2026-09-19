@@ -7,6 +7,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import {
   Accessibility,
   BatteryCharging,
+  CarFront,
   CircleCheck,
   Crown,
   Grid3x3,
@@ -357,6 +358,21 @@ export function SlotsView() {
                 ))}
               </SelectContent>
             </Select>
+            {/**
+             * The board that joins these bays to the vehicles in them. Gated on
+             * `session.read` rather than this page's `zone.read`: the board is
+             * a join with `GET /sessions`, and offering it to an account that
+             * cannot read sessions would be a link to a 403.
+             */}
+            <Can permission="session.read">
+              <Button variant="outline" size="sm" className="h-9" asChild>
+                <Link
+                  href={zoneId === "__all" ? ROUTES.bayBoard : `${ROUTES.bayBoard}?zone=${zoneId}`}
+                >
+                  <CarFront className="size-4" /> Bay board
+                </Link>
+              </Button>
+            </Can>
             {/* POST /slots/bulk — slots.controller.ts:61 */}
             <Can permission="slot.write">
               <Button size="sm" className="h-9" onClick={() => setBulkOpen(true)}>

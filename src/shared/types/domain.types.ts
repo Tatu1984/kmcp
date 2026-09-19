@@ -161,8 +161,23 @@ export interface Attendant {
   zoneName?: string;
   isActive: boolean;
   onShift: boolean;
-  /** Reported by the attendant detail endpoint, not the list. */
-  deviceBound?: boolean;
+  /**
+   * Whether a handset is currently bound to this account.
+   *
+   * Definite now, not optional-because-unknown: the roster endpoint carries the
+   * live device bindings, so `false` means nobody has signed in on a handset —
+   * it no longer means "the list did not say".
+   */
+  deviceBound: boolean;
+  /**
+   * The bound handset, when there is one. The newest binding, which is the one
+   * in the attendant's hand — an account is meant to hold exactly one.
+   */
+  boundDevice?: {
+    platform: string;
+    appVersion?: string;
+    lastSeenAt?: string;
+  };
   /** Session and collection totals arrive with the sessions and payments work. */
   sessionsToday?: number;
   collectionToday?: Paise;
@@ -227,6 +242,60 @@ export interface Tariff {
   createdAt: string;
 }
 
+/** One line of a fare. Amounts are integer paise, like every other figure. */
+export interface QuoteLine {
+  label: string;
+  code: string;
+  amount: Paise;
+}
+
+/**
+ * A priced parking fare, and the arithmetic behind it.
+ *
+ * Declared here rather than beside the endpoint that returns it, because two
+ * different things in this system are this shape: what `POST /tariffs/preview`
+ * answers with, and the `fareBreakdown` a session stores when it ends. They are
+ * the same object — the server writes down the quote it charged — so there is
+ * one type for both, and `Quote` in the API layer is this.
+ *
+ * Mirrors the `Quote` interface in the backend's
+ * `src/modules/tariffs/quote.service.ts`. Nothing in this portal ever computes
+ * one: the server is the single authority on price, which is why the portal,
+ * the attendant app and the citizen app can never disagree about what is owed.
+ */
+export interface Quote {
+  tariffId: string;
+  tariffName: string;
+  /**
+   * Not the tariff's `version`, despite the name: the server fills this from
+   * `tariff.priority` (`quote.service.ts:195`). Carried so the shape matches
+   * what is actually stored, and deliberately not rendered anywhere — a number
+   * captioned "version 3" that is really a tie-break rank is worse than no
+   * number at all. Read `Tariff.version` if a version is what is wanted.
+   */
+  tariffVersion: number;
+  /** Wall-clock minutes between arrival and exit. */
+  durationMinutes: number;
+  /** What was actually billed for, once the grace period came off. */
+  chargeableMinutes: number;
+  gracePeriodMin: number;
+  lines: QuoteLine[];
+  grossAmount: Paise;
+  discountAmount: Paise;
+  penaltyAmount: Paise;
+  taxAmount: Paise;
+  /**
+   * The real percentage this fare was taxed at. Read it — never assume 18. The
+   * Fare tab hardcoded "GST (18%)" for months while the figure beside it had
+   * been computed from whatever the rate card said.
+   */
+  taxPercent: number;
+  payableAmount: Paise;
+  cappedByDailyLimit: boolean;
+  waivedByPass: boolean;
+  passId?: string;
+}
+
 export interface ParkingSession {
   id: string;
   code: string;
@@ -234,19 +303,64 @@ export interface ParkingSession {
   vehicleType: SlotType;
   zoneId: string;
   zoneName: string;
+  /**
+   * The bay this session is parked in, as an id and as the code on the kerb.
+   *
+   * `slotId` is what joins a session to a bay, which is the bay board's whole
+   * job; `slotCode` is what a table cell renders. Both are carried because a
+   * code is not unique across zones and an id is not readable. Either can be
+   * absent: a zone may legitimately have no numbered bays recorded, and a
+   * session started without one is not an error.
+   */
+  slotId?: string;
   slotCode?: string;
   vendorName: string;
   attendantName: string;
+  /**
+   * The ids behind the two display names above. Carried so a screen can filter
+   * or link by vendor and attendant without matching on a name that two
+   * operators could share.
+   */
+  vendorId?: string;
+  attendantId?: string;
   status: SessionStatus;
   source: SessionSource;
   startAt: string;
   endAt?: string;
+  /**
+   * The final duration of a closed session. Deliberately separate from
+   * `elapsedMinutes`: a screen that ticks has to know which of the two it is
+   * holding, or it renders a frozen figure that looks live.
+   */
   durationMinutes?: number;
+  /**
+   * The server's own elapsed-time figure.
+   *
+   * Minutes since arrival while a session is running, and the final duration
+   * once it has ended — the API computes it as
+   * `endAt === null ? now - startAt : durationMinutes`. So it does *not* by
+   * itself say whether a vehicle is still there; `status` does, and every
+   * screen that ticks branches on that.
+   *
+   * Carried because it is the figure a client-side clock counts on from, and
+   * the one a screen shows before its first tick rather than rendering a blank.
+   */
+  elapsedMinutes?: number;
   grossAmount?: Paise;
   discountAmount: Paise;
   taxAmount: Paise;
   penaltyAmount: Paise;
   payableAmount?: Paise;
+  /**
+   * How the total was arrived at — every line, the grace period, the tax rate
+   * actually applied. The four flat totals above are what a table cell needs;
+   * this is what a citizen disputing a charge needs, and the server has always
+   * stored it.
+   *
+   * Absent for a running session, which has not been priced, and for any row
+   * whose stored breakdown does not parse as a fare — see `toSession`.
+   */
+  fareBreakdown?: Quote;
   paymentMode?: PaymentMode;
   paid: boolean;
   evidenceStart?: string;

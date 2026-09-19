@@ -1,12 +1,15 @@
 "use client";
 
 import * as React from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   Ban,
   Building2,
+  CalendarClock,
   ChartNoAxesColumn,
+  Eye,
+  EyeOff,
   LandPlot,
   Loader2,
   MapPin,
@@ -15,6 +18,7 @@ import {
   Plus,
   Smartphone,
   SmartphoneNfc,
+  Trash2,
   UserCheck,
   UserRoundX,
   Users,
@@ -45,6 +49,8 @@ import { DataTable, facetOptionsFrom } from "@/frontend/components/shared/data-t
 import { RowActions } from "@/frontend/components/shared/row-actions";
 import { Can } from "@/frontend/components/shared/can";
 import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
+import { ROUTES } from "@/shared/constants/routes";
+import { relativeTime } from "@/shared/utils/common.util";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { Money, PersonCell } from "@/frontend/components/shared/bits";
 import { FadeStagger, FadeStaggerItem } from "@/frontend/components/reactbits";
@@ -64,6 +70,24 @@ type AttendantDraft = {
   phone: string;
   vendorId: string;
   zoneId: string;
+  /**
+   * Set once, when the account is created, and never read back.
+   *
+   * `UpdateAttendantSchema` omits `password` on purpose, so this is only ever
+   * sent on the create call — the edit form does not show the field at all
+   * rather than showing one that would be silently dropped.
+   */
+  password: string;
+};
+
+/** The shortest password `CreateAttendantSchema` will accept. */
+const MIN_PASSWORD = 8;
+
+/** The `Device.platform` strings the API stores, in the words an officer reads. */
+const PLATFORM_LABEL: Record<string, string> = {
+  android: "Android",
+  ios: "iPhone",
+  web: "Browser",
 };
 
 const EMPTY_DRAFT: AttendantDraft = {
@@ -72,6 +96,7 @@ const EMPTY_DRAFT: AttendantDraft = {
   phone: "",
   vendorId: "",
   zoneId: "",
+  password: "",
 };
 
 export function AttendantsView() {
@@ -112,7 +137,15 @@ export function AttendantsView() {
   const [formOpen, setFormOpen] = React.useState(false);
   const [formBusy, setFormBusy] = React.useState(false);
   const [form, setForm] = React.useState<AttendantDraft>(EMPTY_DRAFT);
+  /**
+   * The officer setting the password is the person who has to read it out to
+   * the attendant, so they need to be able to see what they typed. It is also
+   * the only check against a typo: there is no "reset password" endpoint, so a
+   * mistyped password cannot be corrected from here afterwards.
+   */
+  const [showPassword, setShowPassword] = React.useState(false);
   const [deactivateOpen, setDeactivateOpen] = React.useState(false);
+  const [removeOpen, setRemoveOpen] = React.useState(false);
   const [unbindOpen, setUnbindOpen] = React.useState(false);
 
   const openForm = React.useCallback(
@@ -124,7 +157,12 @@ export function AttendantsView() {
         phone: attendant?.phone ?? "",
         vendorId: attendant?.vendorId ?? presetVendorId ?? vendorOptions[0]?.id ?? "",
         zoneId: attendant?.zoneId ?? zoneOptions[0]?.id ?? "",
+        // Never carried over from an existing account: the portal cannot read
+        // a password back (only a bcrypt hash exists server-side), and an edit
+        // cannot change one.
+        password: "",
       });
+      setShowPassword(false);
       setFormOpen(true);
     },
     [vendorOptions, zoneOptions],
@@ -139,6 +177,7 @@ export function AttendantsView() {
    * them. Fired once: reopening the dialog every time the URL is re-read would
    * make it impossible to close.
    */
+  const router = useRouter();
   const params = useSearchParams();
   const presetVendor = params.get("vendor");
   const wantsNew = params.get("new") === "1";
@@ -149,15 +188,23 @@ export function AttendantsView() {
     openedFromUrl.current = true;
     setSelected(null);
     setForm({ ...EMPTY_DRAFT, vendorId: presetVendor ?? "" });
+    setShowPassword(false);
     setFormOpen(true);
   }, [wantsNew, presetVendor]);
 
-  /** The API requires all three, and an employee code in its own shape. */
+  /**
+   * The API requires all three, and an employee code in its own shape.
+   *
+   * A new account additionally needs a vendor and a password. The password is
+   * required here although the DTO marks it optional, because an attendant
+   * created without one holds a null hash and cannot sign in at all — and
+   * nothing in this portal can give them one afterwards.
+   */
   const canSaveAttendant =
     form.name.trim().length > 1 &&
     form.phone.trim().length > 7 &&
     /^[A-Za-z0-9-]{2,24}$/.test(form.employeeCode.trim()) &&
-    (Boolean(selected) || form.vendorId !== "");
+    (Boolean(selected) || (form.vendorId !== "" && form.password.length >= MIN_PASSWORD));
 
   const columns = React.useMemo<ColumnDef<Attendant, unknown>[]>(
     () => [
@@ -206,16 +253,35 @@ export function AttendantsView() {
         accessorFn: (a) => (a.deviceBound ? "Bound" : "Unbound"),
         header: "Device",
         meta: "Device",
-        cell: ({ row }) =>
-          row.original.deviceBound ? (
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              <Smartphone className="size-3.5" /> Bound
-            </span>
-          ) : (
-            <Badge variant="outline" className="gap-1 text-amber-600 dark:text-amber-400">
-              <SmartphoneNfc className="size-3" /> Not bound
-            </Badge>
-          ),
+        cell: ({ row }) => {
+          const { deviceBound, boundDevice } = row.original;
+          if (!deviceBound) {
+            return (
+              <Badge variant="outline" className="gap-1 text-amber-600 dark:text-amber-400">
+                <SmartphoneNfc className="size-3" /> Not bound
+              </Badge>
+            );
+          }
+          /**
+           * Which handset, and when it was last heard from — the two things an
+           * officer deciding whether to release a binding actually needs. "Bound"
+           * on its own cannot tell a working phone from a lost one.
+           */
+          return (
+            <div className="min-w-0">
+              <span className="inline-flex items-center gap-1 text-xs">
+                <Smartphone className="size-3.5 shrink-0" />
+                {PLATFORM_LABEL[boundDevice?.platform ?? ""] ?? boundDevice?.platform ?? "Bound"}
+                {boundDevice?.appVersion ? (
+                  <span className="text-muted-foreground">v{boundDevice.appVersion}</span>
+                ) : null}
+              </span>
+              <p className="truncate text-[11px] text-muted-foreground">
+                {boundDevice?.lastSeenAt ? `seen ${relativeTime(boundDevice.lastSeenAt)}` : "not seen yet"}
+              </p>
+            </div>
+          );
+        },
       },
       {
         accessorKey: "sessionsToday",
@@ -325,6 +391,23 @@ export function AttendantsView() {
                       }),
                   },
                   {
+                    /**
+                     * The way out of a refusal. Deactivate, transfer and delete
+                     * are all blocked while a shift is open, and each says to
+                     * close it — but the shift lives on another screen, under a
+                     * name the officer would otherwise have to search for.
+                     */
+                    label: "Open shift",
+                    icon: CalendarClock,
+                    hidden: !attendant.onShift,
+                    separatorBefore: true,
+                    permission: "session.read",
+                    onSelect: () =>
+                      router.push(
+                        `${ROUTES.shifts}?attendant=${encodeURIComponent(attendant.name)}`,
+                      ),
+                  },
+                  {
                     label: "Unbind device",
                     icon: SmartphoneNfc,
                     hidden: !attendant.deviceBound,
@@ -357,6 +440,18 @@ export function AttendantsView() {
                       }
                     },
                   },
+                  {
+                    label: "Delete",
+                    icon: Trash2,
+                    destructive: true,
+                    separatorBefore: true,
+                    // DELETE /attendants/:id — attendants.controller.ts:133.
+                    permission: "attendant.write",
+                    onSelect: () => {
+                      setSelected(attendant);
+                      setRemoveOpen(true);
+                    },
+                  },
                 ]}
               />
             </div>
@@ -364,7 +459,7 @@ export function AttendantsView() {
         },
       },
     ],
-    [apply, vendorOptions, zoneOptions, openForm],
+    [apply, vendorOptions, zoneOptions, openForm, router],
   );
 
   const onShift = attendants.filter((a) => a.onShift).length;
@@ -522,8 +617,9 @@ export function AttendantsView() {
           <DialogHeader>
             <DialogTitle>{selected ? `Edit ${selected.name}` : "Add an attendant"}</DialogTitle>
             <DialogDescription>
-              The attendant signs in to the vendor app with the mobile number below. Their first
-              sign-in binds the account to that device.
+              {selected
+                ? "The attendant signs in to the vendor app with the mobile number below. Their first sign-in binds the account to that device."
+                : "Set the mobile number and password the attendant will sign in to the vendor app with. Their first sign-in binds the account to that device."}
             </DialogDescription>
           </DialogHeader>
 
@@ -594,6 +690,45 @@ export function AttendantsView() {
                 </SelectContent>
               </Select>
             </div>
+
+            {/*
+              * Creation only. An edit cannot change a password — the update DTO
+              * drops the field — so showing the input there would be a control
+              * that quietly does nothing.
+              */}
+            {selected ? null : (
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="att-password">Password</Label>
+                <div className="relative">
+                  <Input
+                    id="att-password"
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="new-password"
+                    value={form.password}
+                    onChange={(e) => setForm({ ...form, password: e.target.value })}
+                    className="pr-10 font-mono"
+                    placeholder={`At least ${MIN_PASSWORD} characters`}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute top-1/2 right-1 size-7 -translate-y-1/2 text-muted-foreground"
+                    onClick={() => setShowPassword((shown) => !shown)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </Button>
+                </div>
+                <p className="text-pretty text-xs text-muted-foreground">
+                  {form.password.length > 0 && form.password.length < MIN_PASSWORD
+                    ? `${MIN_PASSWORD - form.password.length} more character${
+                        MIN_PASSWORD - form.password.length === 1 ? "" : "s"
+                      } needed.`
+                    : "They sign in to the vendor app with this mobile number and this password. Write it down before saving — it is stored only as a hash, so nothing can show it again, and it cannot be reset from the portal."}
+                </p>
+              </div>
+            )}
           </div>
 
           <DialogFooter>
@@ -620,7 +755,15 @@ export function AttendantsView() {
                       ? // The update DTO omits vendorId on purpose; a change of
                         // employer goes through /transfer, which records why.
                         attendantsApi.update(selected.id, draft)
-                      : attendantsApi.create({ ...draft, vendorId: form.vendorId }),
+                      : // `password` is deliberately not part of `draft`: the
+                        // same object feeds the update branch above, whose DTO
+                        // drops the field, and the optimistic row below, which
+                        // must never carry it.
+                        attendantsApi.create({
+                          ...draft,
+                          vendorId: form.vendorId,
+                          password: form.password,
+                        }),
                   (list) =>
                     selected
                       ? list.map((a) =>
@@ -656,7 +799,14 @@ export function AttendantsView() {
                       : `${draft.name} · ${vendorName}. They bind a device on their first sign-in.`,
                   },
                 )
-                  .then(() => setFormOpen(false))
+                  .then(() => {
+                    // Drop the password from component state the moment it has
+                    // been accepted; the dialog can be reopened without it
+                    // sitting in memory behind a reveal toggle.
+                    setForm((f) => ({ ...f, password: "" }));
+                    setShowPassword(false);
+                    setFormOpen(false);
+                  })
                   // The error is already a toast; leaving the dialog open keeps
                   // what was typed, which matters most when the API rejects an
                   // employee code that is already taken.
@@ -696,16 +846,61 @@ export function AttendantsView() {
       />
 
       <ConfirmDialog
+        open={removeOpen}
+        onOpenChange={setRemoveOpen}
+        title={`Delete ${selected?.name}?`}
+        destructive
+        confirmLabel="Delete attendant"
+        reason={{
+          label: "Reason",
+          placeholder: "Dismissed / resigned / created in error…",
+          required: true,
+        }}
+        description={
+          "They lose access immediately — no password works, every device is released and they " +
+          "leave the roster. Their shifts, sessions, cash collections and photographs are kept and " +
+          "stay attributable to them, because the money and the evidence have to remain " +
+          "explainable. This cannot be undone from the portal, and their mobile number and " +
+          "employee code stay reserved."
+        }
+        onConfirm={async (reason) => {
+          if (!selected) return;
+          await apply(
+            () => attendantsApi.remove(selected.id, reason ?? "Removed from the portal"),
+            (list) => list.filter((a) => a.id !== selected.id),
+            { success: "Attendant deleted", description: `${selected.name} · ${selected.employeeCode}` },
+          );
+        }}
+      />
+
+      <ConfirmDialog
         open={unbindOpen}
         onOpenChange={setUnbindOpen}
         title={`Unbind ${selected?.name}'s device?`}
         confirmLabel="Unbind device"
-        description="Their current device stops working immediately. The next sign-in binds whichever device they use — do this only when a handset is lost or replaced."
+        description={
+          // Name the handset being released. An officer doing this from a phone
+          // call needs to know they are about to cut off the device they are
+          // being told about, and not a second one nobody mentioned.
+          (selected?.boundDevice
+            ? `Releases the ${
+                PLATFORM_LABEL[selected.boundDevice.platform] ?? selected.boundDevice.platform
+              } handset${
+                selected.boundDevice.lastSeenAt
+                  ? ` last seen ${relativeTime(selected.boundDevice.lastSeenAt)}`
+                  : ""
+              }. `
+            : "") +
+          "It stops working immediately and they are signed out of it. The next sign-in binds whichever device they use — do this only when a handset is lost or replaced."
+        }
         onConfirm={async (reason) => {
           if (!selected) return;
           await apply(
             () => attendantsApi.unbindDevices(selected.id, reason ?? "Handset lost or replaced"),
-            (list) => list.map((a) => (a.id === selected.id ? { ...a, deviceBound: false } : a)),
+            (list) =>
+              list.map((a) =>
+                a.id === selected.id ? { ...a, deviceBound: false, boundDevice: undefined } : a,
+              ),
             { success: "Device unbound", description: `${selected.name} can register a new device.` },
           );
         }}

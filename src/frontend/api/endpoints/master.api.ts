@@ -98,6 +98,13 @@ export interface ApiAttendant {
     email?: string | null;
     status: string;
     lastLoginAt?: string | null;
+    /** Live device bindings, newest first. Absent on older responses. */
+    devices?: {
+      id: string;
+      platform: string;
+      appVersion?: string | null;
+      lastSeenAt?: string | null;
+    }[];
   };
   vendor: { id: string; orgName: string; status: string };
   onShift?: { id: string; startAt: string; zoneId?: string | null } | null;
@@ -130,6 +137,17 @@ export const attendantsApi = {
   /** Releases every bound device and ends the attendant's sessions with it. */
   unbindDevices: (id: string, reason: string) =>
     api.post<{ unbound: true; devicesReleased: number }>(`/attendants/${id}/unbind-device`, { reason }),
+
+  /**
+   * Takes an attendant off the roster for good.
+   *
+   * Nothing is erased. Their shifts, sessions, cash collections and photographs
+   * all keep pointing at them — the server soft-deletes the account, so they
+   * lose every form of access and leave every listing while the record stays
+   * attributable. Refused while a shift is open or a session is still running.
+   */
+  remove: (id: string, reason: string) =>
+    api.delete<{ removed: true; id: string; employeeCode: string }>(`/attendants/${id}`, { reason }),
 };
 
 /* -------------------------------------------------------------------- users */

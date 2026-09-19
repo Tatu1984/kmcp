@@ -70,9 +70,27 @@ export function useResource<T>(
   key: readonly unknown[],
   fetcher: () => Promise<T[]>,
   demoData: T[],
-  options?: { enabled?: boolean },
+  options?: {
+    enabled?: boolean;
+    /**
+     * Re-fetch this often, in milliseconds, or `false` to leave it alone.
+     *
+     * For a screen that is watching something happen rather than reporting on
+     * what happened — vehicles arriving at a kerb, bays changing hands. Pass a
+     * constant from `frontend/lib/live.ts` rather than a number chosen here, so
+     * every polling screen in the portal agrees on the rhythm, and put it
+     * behind a control the operator can switch off: a screen that refetches
+     * forever is a screen that keeps a laptop awake and a tab busy all night.
+     *
+     * Undefined means no polling, which is what every existing caller gets.
+     */
+    refetchInterval?: number | false;
+  },
 ) {
-  const query = useApiQuery<T[]>(key, fetcher, { enabled: options?.enabled });
+  const query = useApiQuery<T[]>(key, fetcher, {
+    enabled: options?.enabled,
+    refetchInterval: options?.refetchInterval,
+  });
   const [demo, setDemo] = React.useState<T[]>(demoData);
   const [busy, setBusy] = React.useState(false);
 

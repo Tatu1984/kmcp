@@ -4,12 +4,48 @@ import type {
   IncidentType,
   PaymentMode,
   PaymentStatus,
+  Quote,
   SessionStatus,
   SessionSource,
   SlotType,
 } from "@/shared/types/domain.types";
 
 type Query = Record<string, string | number | boolean | undefined>;
+
+/**
+ * What `GET /sessions` will actually answer to.
+ *
+ * Written out rather than left as a loose record because two of these are
+ * traps, and both cost an afternoon each:
+ *
+ * `status` takes **one** value. It is a `z.nativeEnum` on the server, so
+ * `?status=ACTIVE,OVERSTAY` and a repeated `?status=` are both 400s. Anything
+ * that wants "currently parked" has to ask twice — a sweep promotes a running
+ * session from ACTIVE to OVERSTAY, so ACTIVE alone silently omits exactly the
+ * vehicles an operator is looking for.
+ *
+ * `overstayOnly` is coerced with `Boolean(string)`, which makes `"false"` and
+ * `"0"` both true, and it *overwrites* whatever `status`, `from` and `to` were
+ * sent. Omit the key to switch it off; never send `false`.
+ */
+export interface SessionListQuery {
+  page?: number;
+  /** Capped at 100 by the API. */
+  pageSize?: number;
+  /** `startAt`, `endAt`, `payableAmount`, `status`, `plateNumber`; `-` for descending. */
+  sort?: string;
+  /** Matches a session code or a plate. */
+  q?: string;
+  /** One status only — see the note above. */
+  status?: SessionStatus;
+  zoneId?: string;
+  vendorId?: string;
+  attendantId?: string;
+  plateNumber?: string;
+  vehicleType?: SlotType;
+  from?: string;
+  to?: string;
+}
 
 export interface ApiSession {
   id: string;
@@ -35,7 +71,20 @@ export interface ApiSession {
   taxAmount: number;
   penaltyAmount: number;
   payableAmount?: number | null;
-  fareBreakdown?: unknown;
+  /**
+   * The fare, exactly as the server worked it out at exit.
+   *
+   * `sessions.service.ts:457` writes the whole `Quote` object into this JSON
+   * column verbatim — no picking, no extra keys — so this is that type rather
+   * than the `unknown` it used to be. Null for anything still running, and for
+   * a cancelled session: `cancel()` zeroes the payable amount and leaves the
+   * breakdown untouched.
+   *
+   * It is a JSON column, which means nothing enforces the shape on the way out
+   * of the database. The adapter checks it before handing it to a screen rather
+   * than trusting this annotation — see `toFareBreakdown`.
+   */
+  fareBreakdown?: Quote | null;
   cancelledReason?: string | null;
   createdAt: string;
   zone?: { id: string; code: string; name: string } | null;
@@ -101,19 +150,92 @@ export interface PlateLookup {
   }[];
 }
 
+/**
+ * What is parked right now, counted by the server.
+ *
+ * Worth preferring over counting rows in the browser for two reasons: it is not
+ * limited to whichever page the table happened to load, and `overstayAfterMinutes`
+ * is the threshold the server is *actually* sweeping on. That threshold is a
+ * `systemConfig` row (`ops.overstayAfterMinutes`, falling back to 360) which an
+ * administrator can change at runtime, so a portal that hardcoded six hours
+ * would quietly disagree with the API the day somebody edited it.
+ */
+export interface SessionLiveSummary {
+  /** Sessions in ACTIVE **or** OVERSTAY — everything with a vehicle in a bay. */
+  activeSessions: number;
+  overstaying: number;
+  overstayAfterMinutes: number;
+  /** Ids only; the caller resolves names from a zone list it already holds. */
+  byZone: { zoneId: string; count: number }[];
+}
+
+/**
+ * What a session costs, answered by the server.
+ *
+ * `GET /sessions/:id/quote`, guarded on `session.read` or `session.read.own`.
+ * It answers for a session in any state, and `provisional` says which of two
+ * quite different things is being handed over:
+ *
+ *  - a **running** session is priced live, through the same engine that will
+ *    price it for real at exit. `provisional: true`. It is a statement about
+ *    this moment and nothing more — the meter keeps going after it is read.
+ *  - a **finished** one is read from storage, never re-priced. `provisional:
+ *    false`. Re-running today's tariff over last week's session would quietly
+ *    disagree with the receipt the citizen is holding.
+ *
+ * This is the only way the portal may show a figure for a running session. The
+ * temptation is `tariffsApi.preview`, and it must be resisted: previewing a
+ * duration against a rate card would make the portal the thing that priced a
+ * real session, and then the portal, the attendant's handset and the citizen's
+ * app would each hold their own opinion about one fare.
+ */
+export interface SessionQuote {
+  sessionId: string;
+  code: string;
+  status: SessionStatus;
+  zone?: { id: string; code: string; name: string } | null;
+  slot?: { id: string; code: string; type: SlotType } | null;
+  vehicleType?: { code: SlotType; label: string } | null;
+  startAt: string;
+  endAt?: string | null;
+  elapsedMinutes: number;
+  isOverstay: boolean;
+  /** True while the session is still running. See the note above. */
+  provisional: boolean;
+  /** When the figure was struck: the exit time, or the moment it was quoted. */
+  quotedAt?: string | null;
+  grossAmount?: number | null;
+  discountAmount: number;
+  taxAmount: number;
+  penaltyAmount: number;
+  payableAmount?: number | null;
+  /**
+   * The breakdown behind those totals.
+   *
+   * Null for a session ended before the fare breakdown was stored: the server's
+   * `storedQuote` hands back what is there rather than declaring a `Quote`
+   * where none exists, "which would only move the failure into whichever app
+   * read `quote.lines`". So this is checked, never assumed.
+   */
+  quote: Quote | null;
+}
+
 export const sessionsApi = {
-  list: (query: Query = {}): Promise<ApiResult<ApiSession[]>> =>
-    api.get<ApiSession[]>("/sessions", { query }),
+  list: (query: SessionListQuery = {}): Promise<ApiResult<ApiSession[]>> =>
+    api.get<ApiSession[]>("/sessions", { query: query as Query }),
 
   get: (idOrCode: string) => api.get<ApiSessionDetail>(`/sessions/${idOrCode}`),
 
-  live: () =>
-    api.get<{
-      activeSessions: number;
-      overstaying: number;
-      overstayAfterMinutes: number;
-      byZone: { zoneId: string; count: number }[];
-    }>("/sessions/live"),
+  live: () => api.get<SessionLiveSummary>("/sessions/live"),
+
+  /**
+   * What this session costs, or would cost if it ended now.
+   *
+   * A deployment older than this route answers 404, which callers should let
+   * degrade rather than treat as a fault: the honest "priced at exit" state is
+   * the right thing to show when the server cannot say.
+   */
+  quote: (idOrCode: string) => api.get<SessionQuote>(`/sessions/${idOrCode}/quote`),
 
   lookupPlate: (plateNumber: string) =>
     api.get<PlateLookup>(`/sessions/plate/${encodeURIComponent(plateNumber)}`),

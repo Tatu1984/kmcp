@@ -9,6 +9,16 @@ export const ROUTES = {
   zones: "/zones",
   zone: (id: string) => `/zones/${id}`,
   slots: "/slots",
+  /**
+   * The per-zone board of which bay holds which vehicle.
+   *
+   * Nested under /slots because it is a way of looking at bays, which also
+   * makes `navItemForPath` resolve it correctly — that lookup tries the longest
+   * href first, so this wins over /slots rather than inheriting its gate. The
+   * two pages need different permissions: bays list under `zone.read`, and this
+   * one additionally reads sessions.
+   */
+  bayBoard: "/slots/board",
   wards: "/wards",
   cameras: "/cameras",
 

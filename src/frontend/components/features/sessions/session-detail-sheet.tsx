@@ -19,7 +19,6 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/frontend/components/ui/button";
 import { Badge } from "@/frontend/components/ui/badge";
-import { Separator } from "@/frontend/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/frontend/components/ui/tabs";
 import {
   Sheet,
@@ -33,7 +32,8 @@ import { ConfirmDialog } from "@/frontend/components/shared/confirm-dialog";
 import { StatusBadge } from "@/frontend/components/shared/status-badge";
 import { NOT_PERMITTED } from "@/frontend/components/shared/can";
 import { usePermissions } from "@/frontend/hooks/use-permissions";
-import { Field, Money, Plate, CopyButton } from "@/frontend/components/shared/bits";
+import { Field, Plate, CopyButton } from "@/frontend/components/shared/bits";
+import { ElapsedTime, LiveClockProvider } from "@/frontend/components/shared/live-clock";
 import { ClickSpark } from "@/frontend/components/reactbits";
 import { sessionsApi, paymentsApi, messagingApi, documentsApi, ApiError } from "@/frontend/api";
 import { useApiQuery } from "@/frontend/hooks/use-api";
@@ -41,12 +41,9 @@ import { useDocument } from "@/frontend/hooks/use-document";
 import { useMessaging } from "@/frontend/hooks/use-messaging";
 import { isLiveApi } from "@/config/env";
 import { ROUTES } from "@/shared/constants/routes";
-import {
-  formatDateTime,
-  formatDuration,
-  formatMoney,
-  relativeTime,
-} from "@/shared/utils/common.util";
+import { LIVE_COUNTS_POLL_MS, isSessionLive } from "@/frontend/lib/live";
+import { FareBreakdownCard, FlatFareSummary } from "./fare-breakdown-card";
+import { formatDateTime, formatDuration, formatMoney } from "@/shared/utils/common.util";
 import { VEHICLE_TYPE_LABELS, PAYMENT_MODE_LABELS } from "@/config/app.config";
 import type { ParkingSession } from "@/shared/types/domain.types";
 
@@ -69,6 +66,10 @@ export function SessionDetailSheet({
   const documents = useDocument();
   const { send, isSending } = useMessaging();
 
+  // Computed before the early return below, because the hooks that depend on it
+  // cannot be called conditionally.
+  const live = session ? isSessionLive(session.status) : false;
+
   /**
    * A refund is issued against a *payment*, not a session, and the session list
    * does not carry payments — `GET /sessions` returns the row only, while
@@ -82,10 +83,50 @@ export function SessionDetailSheet({
     { enabled: open && Boolean(session?.id) && Boolean(session?.paid) },
   );
 
+  /**
+   * What this vehicle would owe if it left right now.
+   *
+   * The one question an officer actually has about a running session, and the
+   * portal is not allowed to answer it: the server is the sole authority on
+   * price. So it asks. `GET /sessions/:id/quote` prices the elapsed time
+   * through the same engine that will price the session for real at exit, and
+   * marks the answer `provisional` so nothing can mistake it for a charge.
+   *
+   * Only for a running session. A finished one already carries its stored
+   * breakdown on the row this sheet was opened with, and the endpoint would
+   * only hand back the same figures for a second request — the server reads a
+   * closed session's fare rather than re-pricing it, deliberately, because
+   * re-running today's tariff over last week's session would disagree with the
+   * receipt the citizen is holding.
+   *
+   * Polled on the live-counters rhythm rather than the list one: it is a single
+   * cheap request, and it is on screen in front of somebody watching it tick.
+   */
+  const runningQuote = useApiQuery(
+    ["session", session?.id ?? "none", "quote"],
+    () => sessionsApi.quote(session!.id).then((r) => r.data),
+    {
+      enabled: open && live && Boolean(session?.id),
+      refetchInterval: open && live ? LIVE_COUNTS_POLL_MS : false,
+    },
+  );
+
   if (!session) return null;
 
-  const live = session.status === "ACTIVE" || session.status === "OVERSTAY";
-  const netGross = session.grossAmount ?? 0;
+  const paidVia = session.paid
+    ? PAYMENT_MODE_LABELS[session.paymentMode ?? "CASH"]
+    : undefined;
+
+  /**
+   * The provisional breakdown, if the server gave one.
+   *
+   * Both halves are checked. `quote` is nullable on the response by design, and
+   * a deployment older than the route answers 404 — in either case the tab
+   * falls back to saying the fare is computed at exit, which remains true.
+   */
+  const provisional = runningQuote.data?.provisional ? runningQuote.data.quote : null;
+  /** A 404 is an older backend, not a fault. Nothing to apologise for. */
+  const quoteUnavailable = runningQuote.error?.status === 404;
 
   /**
    * The payment the money actually came in on. A session can carry a failed
@@ -117,8 +158,99 @@ export function SessionDetailSheet({
       ? "Looking up the payment…"
       : "No captured payment on this session to refund.";
 
+  /**
+   * What happened to this session, from records that exist.
+   *
+   * There is no session event log in the schema — only `AuditLog`, which
+   * records changes officers made through the portal and knows nothing about a
+   * vehicle arriving at a kerb. So this is not a replacement for one, and it is
+   * still the weakest tab in the sheet.
+   *
+   * It is no longer fiction, though. Every row below is a timestamp the API
+   * actually sends. What was removed: an "Evidence stored" entry asserting the
+   * photograph was "hashed and geotagged" whether or not one was ever
+   * captured; a "Payment captured" entry dated to the exit time and defaulting
+   * to CASH when no mode was known; and "Receipt issued — delivered by SMS and
+   * push", which was invented whole, for sessions whose receipt had never been
+   * sent anywhere.
+   *
+   * Payments come from `GET /sessions/:id`, which is fetched only for a paid
+   * session. When that detail has not loaded — demo mode, or a session the
+   * fetch was never enabled for — the session row still asserts *that* money
+   * was taken and by what mode, but carries no time for it, so the entry says
+   * so rather than borrowing the exit timestamp.
+   */
+  const events: { label: string; at?: string; detail: string }[] = [
+    {
+      label: "Session started",
+      at: session.startAt,
+      detail: [
+        session.attendantName !== "—" ? session.attendantName : null,
+        session.slotCode ? `Bay ${session.slotCode}` : "No bay allocated",
+        session.zoneName,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    },
+  ];
+
+  if (session.evidenceStart) {
+    events.push({
+      label: "Entry photograph stored",
+      at: session.startAt,
+      detail: session.evidenceStart,
+    });
+  }
+
+  if (session.endAt) {
+    events.push(
+      session.status === "CANCELLED"
+        ? { label: "Session cancelled", at: session.endAt, detail: "The charge was voided and the bay released." }
+        : {
+            label: "Vehicle unparked, fare computed",
+            at: session.endAt,
+            detail: `${formatDuration(session.durationMinutes)} · ${formatMoney(session.payableAmount)}`,
+          },
+    );
+    if (session.evidenceEnd) {
+      events.push({ label: "Exit photograph stored", at: session.endAt, detail: session.evidenceEnd });
+    }
+  }
+
+  const payments = detail.data?.payments ?? [];
+  if (payments.length > 0) {
+    for (const payment of payments) {
+      events.push({
+        label:
+          payment.status === "CAPTURED"
+            ? "Payment captured"
+            : `Payment ${payment.status.replace(/_/g, " ").toLowerCase()}`,
+        at: payment.createdAt,
+        detail: `${formatMoney(payment.amount)} · ${PAYMENT_MODE_LABELS[payment.mode]}`,
+      });
+    }
+  } else if (session.paid) {
+    events.push({
+      label: "Payment captured",
+      detail: `${formatMoney(session.payableAmount)} · ${paidVia ?? "method not recorded"}`,
+    });
+  }
+
+  // Oldest first. A row with no timestamp has no place in the ordering, so it
+  // is kept where it was pushed rather than sorted to the front by a zero.
+  const timeline = [...events].sort((a, b) =>
+    a.at && b.at ? Date.parse(a.at) - Date.parse(b.at) : a.at ? -1 : 1,
+  );
+
   return (
-    <>
+    /**
+     * Its own clock, so the sheet ticks whether or not whatever opened it has
+     * one. Opened from the sessions table or the bay board it nests inside
+     * theirs, which is harmless — the inner provider simply wins, at the same
+     * rhythm — and opened from anywhere else it still counts up. Stopped when
+     * the sheet is closed or the session is not running: nothing to count.
+     */
+    <LiveClockProvider enabled={open && live}>
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent className="w-full gap-0 overflow-y-auto sm:max-w-2xl">
           <SheetHeader className="gap-2">
@@ -134,7 +266,15 @@ export function SessionDetailSheet({
             </div>
             <SheetDescription>
               {session.zoneName} · started {formatDateTime(session.startAt)}
-              {live && ` · running for ${relativeTime(session.startAt).replace(" ago", "")}`}
+              {live && (
+                <>
+                  {" · running for "}
+                  <ElapsedTime
+                    startAt={session.startAt}
+                    fallbackMinutes={session.elapsedMinutes}
+                  />
+                </>
+              )}
             </SheetDescription>
           </SheetHeader>
 
@@ -149,11 +289,25 @@ export function SessionDetailSheet({
                 </p>
               </div>
               <div className="ml-auto text-right">
+                {/* A running session has no charge, and a dash is the honest
+                    rendering of that — unless the server has quoted one, in
+                    which case say plainly that it is a running total and not a
+                    bill. */}
                 <p className="text-2xl leading-none font-semibold tabular">
-                  {live ? "—" : formatMoney(session.payableAmount)}
+                  {live
+                    ? provisional
+                      ? formatMoney(provisional.payableAmount)
+                      : "—"
+                    : formatMoney(session.payableAmount)}
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {live ? "Charge computed at exit" : session.paid ? "Paid" : "Unpaid"}
+                  {live
+                    ? provisional
+                      ? "So far, if it left now"
+                      : "Charge computed at exit"
+                    : session.paid
+                      ? "Paid"
+                      : "Unpaid"}
                 </p>
               </div>
             </div>
@@ -181,6 +335,17 @@ export function SessionDetailSheet({
                     <span className="font-mono">{session.code}</span>
                   </Field>
                   <Field label="Zone">{session.zoneName}</Field>
+                  {/* The bay, which the adapter used to discard along with the
+                      id that identifies it. "No bay" is a real and common
+                      state, not a gap: plenty of zones have fewer numbered bays
+                      than priced capacity. */}
+                  <Field label="Bay">
+                    {session.slotCode ? (
+                      <span className="font-mono">{session.slotCode}</span>
+                    ) : (
+                      <span className="text-muted-foreground">No bay allocated</span>
+                    )}
+                  </Field>
                   <Field label="Vendor">{session.vendorName}</Field>
                   <Field label="Attendant">{session.attendantName}</Field>
                   <Field label="Source">{session.source.replace("_", " ").toLowerCase()}</Field>
@@ -189,9 +354,16 @@ export function SessionDetailSheet({
                     {session.endAt ? formatDateTime(session.endAt) : "Still running"}
                   </Field>
                   <Field label="Duration">
-                    {session.durationMinutes
-                      ? formatDuration(session.durationMinutes)
-                      : `${relativeTime(session.startAt).replace(" ago", "")} so far`}
+                    {live ? (
+                      <ElapsedTime
+                        startAt={session.startAt}
+                        fallbackMinutes={session.elapsedMinutes}
+                      />
+                    ) : session.durationMinutes !== undefined ? (
+                      formatDuration(session.durationMinutes)
+                    ) : (
+                      "—"
+                    )}
                   </Field>
                   {session.citizenName && (
                     <>
@@ -210,55 +382,45 @@ export function SessionDetailSheet({
               {/* ---------------------------------------------------- fare */}
               <TabsContent value="fare" className="mt-4 space-y-3">
                 {live ? (
-                  <div className="rounded-lg border border-dashed p-6 text-center">
-                    <Clock className="mx-auto size-5 text-muted-foreground" />
-                    <p className="mt-2 text-sm font-medium">Fare is computed at exit</p>
-                    <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground text-pretty">
-                      The attendant&apos;s app calls the quote endpoint when the vehicle leaves. Nothing
-                      is priced on the device — the server resolves the tariff version, applies every
-                      rule and returns the breakdown.
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    <dl className="divide-y divide-border/60">
-                      <Field label="Gross charge">
-                        <Money value={netGross} />
-                      </Field>
-                      {session.discountAmount > 0 && (
-                        <Field label="Discount">
-                          <span className="text-emerald-600 dark:text-emerald-400">
-                            −{formatMoney(session.discountAmount)}
-                          </span>
-                        </Field>
+                  provisional ? (
+                    <FareBreakdownCard quote={provisional} provisional />
+                  ) : (
+                    <div className="rounded-lg border border-dashed p-6 text-center">
+                      <Clock className="mx-auto size-5 text-muted-foreground" />
+                      <p className="mt-2 text-sm font-medium">Fare is computed at exit</p>
+                      <p className="mx-auto mt-1 max-w-sm text-xs text-pretty text-muted-foreground">
+                        Nothing is priced here and nothing is priced on the attendant&apos;s handset.
+                        When the vehicle is marked unparked, the server resolves the rate card that
+                        was in force, applies every rule and returns the breakdown — which then
+                        appears on this tab, in this order, for both apps and this screen.
+                      </p>
+                      {runningQuote.isError && !quoteUnavailable && (
+                        /* The request failed on its merits. Worth showing: the
+                           alternative is a tab that looks identical whether the
+                           figure is missing by design or missing because
+                           something broke. A 404 is excluded — that is simply a
+                           backend that does not offer running totals yet, and
+                           the copy above is already the right answer for it. */
+                        <p className="mx-auto mt-2 max-w-sm text-xs text-amber-600 dark:text-amber-400">
+                          A running total was requested and could not be read.{" "}
+                          {runningQuote.error?.message}
+                        </p>
                       )}
-                      {session.penaltyAmount > 0 && (
-                        <Field label="Overstay penalty">
-                          <span className="text-amber-600 dark:text-amber-400">
-                            +{formatMoney(session.penaltyAmount)}
-                          </span>
-                        </Field>
-                      )}
-                      <Field label="GST (18%)">
-                        <Money value={session.taxAmount} />
-                      </Field>
-                    </dl>
-                    <Separator />
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-sm font-medium">Total payable</span>
-                      <Money value={session.payableAmount} className="text-lg font-semibold" />
                     </div>
-                    {session.paid && (
-                      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/[0.06] p-3">
-                        <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
-                          Collected via {PAYMENT_MODE_LABELS[session.paymentMode ?? "CASH"]}
-                        </p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          Receipt issued and delivered to the citizen.
-                        </p>
-                      </div>
-                    )}
-                  </>
+                  )
+                ) : session.fareBreakdown ? (
+                  /* The calculation the server actually performed, stored on the
+                     session the moment it ended. */
+                  <FareBreakdownCard quote={session.fareBreakdown} paidVia={paidVia} />
+                ) : (
+                  <FlatFareSummary
+                    grossAmount={session.grossAmount}
+                    discountAmount={session.discountAmount}
+                    penaltyAmount={session.penaltyAmount}
+                    taxAmount={session.taxAmount}
+                    payableAmount={session.payableAmount}
+                    paidVia={paidVia}
+                  />
                 )}
               </TabsContent>
 
@@ -308,29 +470,41 @@ export function SessionDetailSheet({
               </TabsContent>
 
               {/* ------------------------------------------------ timeline */}
-              <TabsContent value="timeline" className="mt-4">
+              <TabsContent value="timeline" className="mt-4 space-y-3">
                 <ol className="relative space-y-4 border-l pl-5">
-                  {[
-                    { label: "Session started", at: session.startAt, detail: `${session.attendantName} · GPS inside ${session.zoneName}` },
-                    { label: "Evidence stored", at: session.startAt, detail: "Entry photograph hashed and geotagged" },
-                    ...(session.endAt
-                      ? [
-                          { label: "Fare computed", at: session.endAt, detail: `${formatDuration(session.durationMinutes)} · ${formatMoney(session.payableAmount)}` },
-                          { label: "Payment captured", at: session.endAt, detail: PAYMENT_MODE_LABELS[session.paymentMode ?? "CASH"] },
-                          { label: "Receipt issued", at: session.endAt, detail: "Delivered by SMS and push" },
-                        ]
-                      : [{ label: "Awaiting exit", at: session.startAt, detail: "Timer running" }]),
-                  ].map((event, i) => (
-                    <li key={i} className="relative">
+                  {timeline.map((event, i) => (
+                    <li key={`${event.label}-${i}`} className="relative">
                       <span className="absolute top-1 -left-[1.6rem] size-2.5 rounded-full border-2 border-background bg-primary" />
                       <p className="text-sm font-medium">{event.label}</p>
-                      <p className="text-xs text-muted-foreground">{event.detail}</p>
+                      <p className="text-xs break-all text-muted-foreground">{event.detail}</p>
                       <p className="mt-0.5 text-[11px] text-muted-foreground">
-                        {formatDateTime(event.at)}
+                        {event.at ? formatDateTime(event.at) : "Time not recorded against this session"}
                       </p>
                     </li>
                   ))}
+
+                  {live && (
+                    <li className="relative">
+                      <span className="absolute top-1 -left-[1.6rem] size-2.5 animate-pulse rounded-full border-2 border-background bg-sky-500" />
+                      <p className="text-sm font-medium">Still parked</p>
+                      <p className="text-xs text-muted-foreground">
+                        Running for{" "}
+                        <ElapsedTime
+                          startAt={session.startAt}
+                          fallbackMinutes={session.elapsedMinutes}
+                        />
+                        . The fare is computed when the attendant marks the vehicle unparked.
+                      </p>
+                    </li>
+                  )}
                 </ol>
+
+                <p className="rounded-lg border border-dashed bg-muted/25 p-3 text-[11px] text-pretty text-muted-foreground">
+                  Built from the timestamps the session itself carries. There is no per-session event
+                  log in the platform — the audit trail records what officers changed, not what
+                  happened at the kerb — so anything the records do not show is absent here rather
+                  than assumed.
+                </p>
               </TabsContent>
             </Tabs>
           </div>
@@ -524,6 +698,6 @@ export function SessionDetailSheet({
           }
         }}
       />
-    </>
+    </LiveClockProvider>
   );
 }

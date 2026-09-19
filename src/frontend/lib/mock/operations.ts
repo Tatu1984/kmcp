@@ -3,10 +3,13 @@ import type {
   Payment,
   Incident,
   ActivityItem,
+  Quote,
+  QuoteLine,
+  Slot,
   SlotType,
   PaymentMode,
 } from "@/shared/types/domain.types";
-import { ZONES } from "./geography";
+import { SLOTS, ZONES } from "./geography";
 import { ATTENDANTS } from "./partners";
 import { makeRng, minutesAgo, daysAgo } from "./rng";
 
@@ -47,22 +50,132 @@ const MODE_MIX: [PaymentMode, number][] = [
   ["CORPORATE", 1],
 ];
 
-function fareFor(type: SlotType, minutes: number) {
-  const base: Record<string, number> = {
-    TWO_WHEELER: 1000,
-    THREE_WHEELER: 1500,
-    CAR: 2000,
-    EV: 1500,
-    COMMERCIAL: 4000,
-    BUS: 6000,
-    TRUCK: 6000,
-    VIP: 5000,
-    GOVERNMENT: 0,
-    ACCESSIBLE: 1000,
+const HOURLY_RATE: Record<string, number> = {
+  TWO_WHEELER: 1000,
+  THREE_WHEELER: 1500,
+  CAR: 2000,
+  EV: 1500,
+  COMMERCIAL: 4000,
+  BUS: 6000,
+  TRUCK: 6000,
+  VIP: 5000,
+  GOVERNMENT: 0,
+  ACCESSIBLE: 1000,
+};
+
+/** The grace period the demo rate cards in `pricing.ts` all carry. */
+const GRACE_MIN = 10;
+
+/**
+ * A fare and the arithmetic behind it, the way the server would answer.
+ *
+ * This used to return a single number, which was all the sessions table needed.
+ * The Fare tab now shows the calculation — every line, the grace period, the
+ * real tax rate — and a demonstration with no breakdown to show would leave
+ * that screen permanently on its "not itemised" fallback, which is precisely
+ * the state it exists to replace.
+ *
+ * The totals are derived here and copied onto the session, rather than computed
+ * twice: a breakdown whose lines do not add up to the total printed beside it
+ * is the one bug a fare screen must never have, even in a demonstration.
+ */
+function quoteFor(
+  type: SlotType,
+  minutes: number,
+  opts: { penalty: number; discounted: boolean },
+): Quote {
+  const rate = HOURLY_RATE[type] ?? 2000;
+  const chargeableMinutes = Math.max(0, minutes - GRACE_MIN);
+  const blocks = Math.ceil(chargeableMinutes / 60);
+
+  const lines: QuoteLine[] = [];
+  if (blocks > 0) {
+    lines.push({ label: "First hour", code: "BASE", amount: rate });
+  }
+  if (blocks > 1) {
+    lines.push({
+      label: `Each additional hour × ${blocks - 1}`,
+      code: "INCREMENT",
+      amount: rate * (blocks - 1),
+    });
+  }
+
+  const grossAmount = lines.reduce((sum, line) => sum + line.amount, 0);
+  const discountAmount = opts.discounted ? Math.round(grossAmount * 0.1) : 0;
+  const taxPercent = 18;
+  const taxable = grossAmount - discountAmount + opts.penalty;
+  const taxAmount = Math.round((taxable * taxPercent) / 100);
+
+  return {
+    tariffId: "trf_001",
+    tariffName: type === "CAR" ? "City Standard — Car" : `City Standard — ${type}`,
+    tariffVersion: 3,
+    durationMinutes: minutes,
+    chargeableMinutes,
+    gracePeriodMin: GRACE_MIN,
+    lines,
+    grossAmount,
+    discountAmount,
+    penaltyAmount: opts.penalty,
+    taxAmount,
+    taxPercent,
+    payableAmount: taxable + taxAmount,
+    // A long stay would hit the daily cap in `pricing.ts`; the demo durations
+    // stay under it, so claiming otherwise would be a figure with no working.
+    cappedByDailyLimit: false,
+    waivedByPass: false,
   };
-  const b = base[type] ?? 2000;
-  const blocks = Math.max(1, Math.ceil(minutes / 60));
-  return b * blocks;
+}
+
+/**
+ * The bays each zone actually has, so a demonstration session can be parked in
+ * one that exists.
+ *
+ * Sessions used to carry an invented `slotCode` — `C07` whether or not the zone
+ * had a bay by that name — and no `slotId` at all. Nothing noticed while no
+ * screen joined the two; the bay board is that join, and against invented codes
+ * it would show an empty car park beside forty-six parked cars.
+ */
+const BAYS_BY_ZONE = new Map<string, Slot[]>();
+for (const slot of SLOTS) {
+  const bays = BAYS_BY_ZONE.get(slot.zoneId);
+  if (bays) bays.push(slot);
+  else BAYS_BY_ZONE.set(slot.zoneId, [slot]);
+}
+
+/** Bays already holding a live demonstration session. */
+const claimedBays = new Set<string>();
+
+function bayFor(zoneId: string, live: boolean): Slot | undefined {
+  const bays = BAYS_BY_ZONE.get(zoneId) ?? [];
+  if (bays.length === 0) return undefined;
+
+  if (!live) {
+    // A finished session's bay is history. It may well have been re-let since,
+    // so this deliberately does not avoid the bays live sessions are using.
+    return rng.pick(bays);
+  }
+
+  /**
+   * One live session in two dozen is put in a bay the fixture does not call
+   * OCCUPIED. That is a real fault this system produces — the API flips a bay
+   * to OCCUPIED when a session starts and back when it ends, and nothing
+   * reconciles a bay whose session was abandoned — and the bay board's
+   * mismatch panel exists to surface it. A demonstration in which the panel is
+   * always empty would not show that it works.
+   */
+  const deliberateMismatch = rng.bool(0.04);
+  const candidates = bays.filter(
+    (bay) =>
+      !claimedBays.has(bay.id) &&
+      (deliberateMismatch ? bay.status === "AVAILABLE" : bay.status === "OCCUPIED"),
+  );
+  // No free bay of the kind wanted: the vehicle is parked in the zone without a
+  // numbered bay, which is the ordinary case in a zone with few bays mapped.
+  const bay = candidates[0];
+  if (!bay) return undefined;
+  claimedBays.add(bay.id);
+  return bay;
 }
 
 export const SESSIONS: ParkingSession[] = Array.from({ length: 180 }).map((_, i) => {
@@ -72,14 +185,21 @@ export const SESSIONS: ParkingSession[] = Array.from({ length: 180 }).map((_, i)
   const active = i < 46;
   const startMinsAgo = active ? rng.int(4, 420) : rng.int(300, 4800);
   const duration = active ? startMinsAgo : rng.int(18, 380);
-  const gross = fareFor(type, duration);
   const overstay = active && startMinsAgo > 330;
   const penalty = overstay ? 5000 : 0;
-  const discount = rng.bool(0.08) ? Math.round(gross * 0.1) : 0;
-  const tax = Math.round((gross - discount + penalty) * 0.18);
-  const payable = gross - discount + penalty + tax;
-  const paid = !active && rng.bool(0.96);
+  const discounted = rng.bool(0.08);
+  const cancelled = !active && rng.bool(0.03);
+  /**
+   * Only a session that ended has a fare. The API leaves `fareBreakdown` null
+   * while a session runs — there is nothing to price yet — and leaves it null
+   * on a cancelled one too, which zeroes the amount owed rather than pricing
+   * it. Inventing either would put a figure on screen the server never agreed
+   * to, which is the thing the Fare tab is being rebuilt to stop doing.
+   */
+  const priced = active || cancelled ? undefined : quoteFor(type, duration, { penalty, discounted });
+  const paid = Boolean(priced) && rng.bool(0.96);
   const isCitizen = rng.bool(0.42);
+  const bay = bayFor(zone.id, active);
 
   return {
     id: `ses_${String(i + 1).padStart(4, "0")}`,
@@ -88,10 +208,13 @@ export const SESSIONS: ParkingSession[] = Array.from({ length: 180 }).map((_, i)
     vehicleType: type,
     zoneId: zone.id,
     zoneName: zone.name,
-    slotCode: rng.bool(0.55) ? `C${String(rng.int(1, 40)).padStart(2, "0")}` : undefined,
+    slotId: bay?.id,
+    slotCode: bay?.code,
     vendorName: zone.vendorName ?? "—",
     attendantName: attendant.name,
-    status: active ? (overstay ? "OVERSTAY" : "ACTIVE") : rng.bool(0.03) ? "CANCELLED" : rng.bool(0.02) ? "DISPUTED" : "COMPLETED",
+    vendorId: zone.vendorId,
+    attendantId: attendant.id,
+    status: active ? (overstay ? "OVERSTAY" : "ACTIVE") : cancelled ? "CANCELLED" : rng.bool(0.02) ? "DISPUTED" : "COMPLETED",
     source: rng.weighted([
       ["ATTENDANT_APP", 82],
       ["OFFLINE_SYNC", 12],
@@ -101,11 +224,16 @@ export const SESSIONS: ParkingSession[] = Array.from({ length: 180 }).map((_, i)
     startAt: minutesAgo(startMinsAgo),
     endAt: active ? undefined : minutesAgo(Math.max(1, startMinsAgo - duration)),
     durationMinutes: active ? undefined : duration,
-    grossAmount: active ? undefined : gross,
-    discountAmount: discount,
-    taxAmount: active ? 0 : tax,
+    // The server reports a running time for a live session and nothing for a
+    // closed one, which is what lets a screen tell a ticking figure from a
+    // final one. Mirrored here so demo mode exercises the same branch.
+    elapsedMinutes: active ? startMinsAgo : undefined,
+    grossAmount: priced?.grossAmount,
+    discountAmount: priced?.discountAmount ?? 0,
+    taxAmount: priced?.taxAmount ?? 0,
     penaltyAmount: penalty,
-    payableAmount: active ? undefined : payable,
+    payableAmount: priced?.payableAmount,
+    fareBreakdown: priced,
     paymentMode: paid ? rng.weighted(MODE_MIX) : undefined,
     paid,
     evidenceStart: `evidence/${zone.code.toLowerCase()}/start-${i + 1}.jpg`,

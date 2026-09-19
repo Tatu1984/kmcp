@@ -33,6 +33,8 @@ import type {
   Pass,
   PassPlan,
   Payment,
+  Quote,
+  QuoteLine,
   ReportJob,
   ReportSchedule,
   ReportStatus,
@@ -145,8 +147,24 @@ export function toAttendant(attendant: ApiAttendant): Attendant {
     zoneId: attendant.defaultZoneId ?? undefined,
     isActive: attendant.isActive,
     onShift: Boolean(attendant.onShift),
-    // Device binding is reported by the attendant detail endpoint, not the list.
-    deviceBound: undefined,
+    /**
+     * The roster now carries live device bindings, so this is a real answer.
+     *
+     * It used to be hardcoded `undefined` with a note that only the detail
+     * endpoint knew — which quietly disabled four things at once: the Device
+     * column read "Not bound" for everyone, the Bound/Unbound filter matched
+     * nothing, the "no device assigned" figure counted the whole roster, and
+     * the Unbind action, hidden behind `!deviceBound`, could not be reached for
+     * a single attendant.
+     */
+    deviceBound: (attendant.user.devices?.length ?? 0) > 0,
+    boundDevice: attendant.user.devices?.[0]
+      ? {
+          platform: attendant.user.devices[0].platform,
+          appVersion: attendant.user.devices[0].appVersion ?? undefined,
+          lastSeenAt: attendant.user.devices[0].lastSeenAt ?? undefined,
+        }
+      : undefined,
     sessionsToday: undefined,
     collectionToday: undefined,
     createdAt: attendant.createdAt,
@@ -236,6 +254,54 @@ export function toBanner(banner: ApiBanner): Banner {
   };
 }
 
+/**
+ * The stored fare, if what is stored is actually a fare.
+ *
+ * `fareBreakdown` is a JSON column. The server writes a whole `Quote` into it
+ * and the type says so, but a type annotation on a JSON column is a promise
+ * about the code that wrote the row — not about the row. Rows predate fields,
+ * a migration can leave a partial object behind, and a session ended by an
+ * older deployment is still in the table. The Fare tab maps over `lines` and
+ * labels a percentage from `taxPercent`; handed something else it would either
+ * throw inside a sheet or render "Tax (undefined%)".
+ *
+ * So the fields the screen actually renders are checked, and a breakdown that
+ * fails becomes `undefined` — which the Fare tab already has an honest state
+ * for, falling back to the flat totals the session row carries separately.
+ * Unrendered fields are deliberately not checked: `tariffVersion` is never
+ * shown (see its note in `domain.types.ts`), and rejecting a row over a field
+ * nobody looks at would hide a breakdown that is perfectly usable.
+ */
+export function toFareBreakdown(value: unknown): Quote | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const q = value as Record<string, unknown>;
+
+  const num = (key: string) => typeof q[key] === "number" && Number.isFinite(q[key]);
+  if (!num("payableAmount") || !num("grossAmount")) return undefined;
+  if (!num("discountAmount") || !num("penaltyAmount") || !num("taxAmount")) return undefined;
+  if (!num("taxPercent")) return undefined;
+  if (!num("durationMinutes") || !num("chargeableMinutes") || !num("gracePeriodMin")) {
+    return undefined;
+  }
+  if (typeof q.tariffName !== "string") return undefined;
+
+  // An empty `lines` array is legitimate — a session inside its grace period is
+  // priced at nothing and has nothing to itemise — but a missing or malformed
+  // one is not, because the card's first act is to map over it.
+  if (!Array.isArray(q.lines)) return undefined;
+  const linesValid = q.lines.every(
+    (line): line is QuoteLine =>
+      typeof line === "object" &&
+      line !== null &&
+      typeof (line as QuoteLine).label === "string" &&
+      typeof (line as QuoteLine).amount === "number" &&
+      Number.isFinite((line as QuoteLine).amount),
+  );
+  if (!linesValid) return undefined;
+
+  return value as Quote;
+}
+
 export function toSession(session: ApiSession): ParkingSession {
   return {
     id: session.id,
@@ -244,14 +310,32 @@ export function toSession(session: ApiSession): ParkingSession {
     vehicleType: session.vehicleType?.code ?? "CAR",
     zoneId: session.zoneId,
     zoneName: session.zone?.name ?? "—",
+    // Both halves of the bay, and both are needed. `slotId` is the only thing
+    // that joins a session to a bay — without it the bay board cannot exist,
+    // which is why it was the first field this adapter had to stop discarding.
+    slotId: session.slotId ?? undefined,
     slotCode: session.slot?.code,
     vendorName: session.vendor?.orgName ?? "—",
     attendantName: session.attendant?.user?.name ?? "—",
+    vendorId: session.vendorId,
+    attendantId: session.attendantId ?? undefined,
     status: session.status,
     source: session.source,
     startAt: session.startAt,
     endAt: session.endAt ?? undefined,
     durationMinutes: session.durationMinutes ?? session.elapsedMinutes ?? undefined,
+    /**
+     * Kept apart from `durationMinutes` above, which collapses the two so a
+     * table cell has one number to print.
+     *
+     * The collapse is what made the sessions table render a frozen duration for
+     * every running vehicle: once the API started reporting an elapsed time, a
+     * live session *had* a `durationMinutes`, and the cell's "is it set" test
+     * stopped distinguishing a final figure from a snapshot. Carried separately
+     * so a screen that ticks has a starting point, and deciding whether to tick
+     * is left to `status`, which is the only field that actually knows.
+     */
+    elapsedMinutes: session.elapsedMinutes ?? undefined,
     grossAmount: session.grossAmount ?? undefined,
     discountAmount: session.discountAmount,
     taxAmount: session.taxAmount,
@@ -263,6 +347,10 @@ export function toSession(session: ApiSession): ParkingSession {
     // screen, and every completed session rendered as unpaid because of it.
     paymentMode: session.payments?.[0]?.mode,
     paid: (session.payments?.length ?? 0) > 0,
+    // How the total was arrived at, which the API has always sent and this
+    // adapter always dropped — so the Fare tab had four flat figures to show
+    // and invented the tax rate beside them.
+    fareBreakdown: toFareBreakdown(session.fareBreakdown),
     evidenceStart: session.evidenceStartMediaId ?? undefined,
     evidenceEnd: session.evidenceEndMediaId ?? undefined,
     isOverstay: session.isOverstay ?? false,

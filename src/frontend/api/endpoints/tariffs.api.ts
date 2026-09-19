@@ -1,29 +1,16 @@
 import { api } from "../client";
-import type { SlotType } from "@/shared/types/domain.types";
+import type { Quote, SlotType } from "@/shared/types/domain.types";
 
-export interface QuoteLine {
-  label: string;
-  code: string;
-  amount: number;
-}
-
-/** Every amount is integer paise. Format only at the edge. */
-export interface Quote {
-  tariffId: string;
-  tariffName: string;
-  durationMinutes: number;
-  chargeableMinutes: number;
-  gracePeriodMin: number;
-  lines: QuoteLine[];
-  grossAmount: number;
-  discountAmount: number;
-  penaltyAmount: number;
-  taxAmount: number;
-  taxPercent: number;
-  payableAmount: number;
-  cappedByDailyLimit: boolean;
-  waivedByPass: boolean;
-}
+/**
+ * The fare shape lives in `shared/types/domain.types.ts` and is re-exported
+ * here under the name the API uses for it.
+ *
+ * It was declared twice — once here for `preview`, and nowhere at all for the
+ * `fareBreakdown` a session stores, which was typed `unknown` and thrown away.
+ * They are the same object, so there is now one declaration; a screen reading
+ * a stored breakdown and a screen reading a live preview cannot drift apart.
+ */
+export type { Quote, QuoteLine } from "@/shared/types/domain.types";
 
 export interface ApiTariff {
   id: string;
