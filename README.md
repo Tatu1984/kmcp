@@ -28,9 +28,23 @@ the login screen — the password is pre-filled and any six digits pass the 2FA 
 
 ### With a database
 
+**This repo does not own the schema.** `src/backend/database/prisma/` is a stale copy kept only so
+that `prisma generate` can satisfy the `build` and `postinstall` scripts; nothing imports the client
+it generates. It holds a single `init` migration against a database that is now fifteen migrations
+further on. The schema, the migrations and the seed all live in **`kmcp-backend`**, which is the only
+thing that writes to this database.
+
+So there is deliberately no command in this repo that can write to it. `db:migrate`, `db:deploy` and
+`db:seed` were removed: they pointed a fifteen-migrations-stale schema at the live database, and
+`prisma migrate dev` in particular *offers to reset the database* when it finds drift — which it
+would, immediately. (`db:seed` had already been broken for a while: it ran a `seed.ts` that no longer
+exists.) Point the portal at a database by setting `DATABASE_URL` and `DIRECT_URL` in `.env.local`,
+and migrate and seed from the backend checkout:
+
 ```bash
-# set DATABASE_URL and DIRECT_URL in .env.local first
-npx prisma migrate dev
+cd ../kmcp-backend
+set -a && . ./.env && set +a   # prisma.config.ts disables Prisma's own .env loading
+npm run db:deploy              # or db:migrate, when authoring a change
 npm run db:seed
 ```
 
@@ -44,16 +58,17 @@ client is constructed with `@prisma/adapter-pg` and no `datasourceUrl` argument.
 Import the repo in Vercel and leave the build settings on their defaults — the `build`
 script runs `prisma generate && next build`.
 
-**Migrations are deliberately not part of the build.** Running `prisma migrate deploy`
-during a build means it fires on every preview deploy, can race between concurrent
-builds, and turns a bad migration into a failed build instead of a failed deploy. Apply
-them from your machine (or a release step) against the same database instead:
+**Migrations are deliberately not part of the build**, and are not run from this repo at
+all (see *With a database* above). Running `prisma migrate deploy` during a build means it
+fires on every preview deploy, can race between concurrent builds, and turns a bad
+migration into a failed build instead of a failed deploy. Apply them from the
+`kmcp-backend` checkout, which owns the schema, against the same database:
 
 ```bash
-# after editing schema.prisma
-set -a && . ./.env.local && set +a   # prisma.config.ts disables Prisma's own .env loading
-npm run db:migrate                   # creates the migration and applies it locally
-git add src/backend/database/prisma/migrations && git commit && git push
+cd ../kmcp-backend
+set -a && . ./.env && set +a         # prisma.config.ts disables Prisma's own .env loading
+npm run db:migrate                  # creates the migration and applies it locally
+git add prisma/migrations && git commit && git push
 
 # to apply an already-committed migration to another environment
 DATABASE_URL="<target>" npm run db:deploy

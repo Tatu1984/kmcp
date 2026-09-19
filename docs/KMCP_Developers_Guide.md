@@ -1794,6 +1794,10 @@ model OtpRequest {
 
 ## 7.4 Migrations
 
+All of these run **in the `kmcp-backend` checkout**, which owns the schema, the migration
+history and the seed. The portal repo carries a stale one-migration copy of the schema purely
+to satisfy `prisma generate` in its build, and has no database-writing command of its own.
+
 ```bash
 npx prisma migrate dev --name <change>     # local
 npx prisma migrate deploy                  # staging / production, run by CI
@@ -2015,17 +2019,27 @@ push → GitHub Actions
 
 ## 10.6 Getting started
 
+The platform is four sibling checkouts, not one: `kmcp` (this portal), `kmcp-backend` (the API,
+which owns the database), `kmcp-vendor` (the kerbside attendant app) and `kmcp-citizen` (the driver
+app). Migrate and seed from the backend — the portal has no command that writes to the database.
+
 ```bash
-git clone git@github.com:<org>/kmcp.git && cd kmcp
-cp .env.example .env.local          # fill in the values above
+# the API and the database
+git clone git@github.com:<org>/kmcp-backend.git && cd kmcp-backend
+cp .env.example .env                # fill in the values above
 npm install
-npx prisma generate
-npx prisma migrate dev
+set -a && . ./.env && set +a        # prisma.config.ts disables Prisma's own .env loading
+npm run db:deploy                   # or db:migrate, when authoring a change
 npm run db:seed                     # demo ward, zone, tariff, vendor, attendant, citizen
+npm run dev                         # http://localhost:4000
+
+# the HQ portal
+cd ../kmcp && cp .env.example .env.local && npm install
 npm run dev                         # http://localhost:3000
 
-# mobile
-cd mobile/vendor-app && npm install && npx expo start
+# the mobile apps (each its own Expo workspace; note the scripts differ)
+cd ../kmcp-vendor  && npm install && npm start     # also: dev:local, to target a LAN backend
+cd ../kmcp-citizen && npm install && npm run dev   # also: dev:local
 ```
 
 Seeded credentials are printed at the end of `db:seed` and are **development only**.
