@@ -265,6 +265,14 @@ export function TariffsView() {
           </div>
         ),
       },
+      // Declared so the Zone facet has a column to filter on, hidden because
+      // the zone already appears beside the tariff's name.
+      {
+        accessorKey: "zoneName",
+        header: "Zone",
+        meta: "Zone",
+        cell: ({ row }) => <span className="truncate text-sm">{row.original.zoneName}</span>,
+      },
       {
         accessorKey: "dailyCapAmount",
         header: "Daily cap",
@@ -448,6 +456,7 @@ export function TariffsView() {
             data={tariffs}
             columns={columns}
             searchKeys={["name", "zoneName"]}
+            initialVisibility={{ zoneName: false }}
             searchPlaceholder="Search tariff or zone…"
             facets={[
               {

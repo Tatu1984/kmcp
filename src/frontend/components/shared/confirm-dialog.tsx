@@ -64,9 +64,24 @@ export function ConfirmDialog({
 
   async function handleConfirm() {
     setBusy(true);
-    await onConfirm(value.trim() || undefined);
-    setBusy(false);
-    onOpenChange(false);
+    try {
+      await onConfirm(value.trim() || undefined);
+      onOpenChange(false);
+    } catch {
+      /**
+       * A refused action leaves the dialog open, with what was typed still in
+       * it. `apply()` has already reported the reason as a toast, so there is
+       * nothing to say here — but there is something to undo: without this
+       * catch the rejection escaped as an unhandled promise, `setBusy(false)`
+       * below never ran, and the confirm button span forever on a request that
+       * had already failed. Staying open is also the useful outcome, because
+       * these refusals are usually fixable — close the open shift, end the
+       * running session — and the officer can then confirm again without
+       * retyping their reason.
+       */
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (

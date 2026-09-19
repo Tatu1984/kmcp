@@ -204,6 +204,14 @@ export function PassesView() {
           </div>
         ),
       },
+      // Declared so the Plan facet has a column to filter on, hidden because
+      // the plan already appears under the pass code above.
+      {
+        accessorKey: "planName",
+        header: "Plan",
+        meta: "Plan",
+        cell: ({ row }) => <span className="truncate text-sm">{row.original.planName}</span>,
+      },
       {
         accessorKey: "holderName",
         header: "Holder",
@@ -401,6 +409,7 @@ export function PassesView() {
             columns={columns}
             enableSelection
             searchKeys={["code", "holderName", "holderPhone", "plateNumber", "planName"]}
+            initialVisibility={{ planName: false }}
             searchPlaceholder="Search pass code, holder, phone or plate…"
             facets={[
               {

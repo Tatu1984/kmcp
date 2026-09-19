@@ -131,6 +131,23 @@ export type DataTableProps<T> = {
   /** Column ids searched by the toolbar search box. */
   searchKeys?: (keyof T & string)[];
   searchPlaceholder?: string;
+  /**
+   * Seeds the toolbar search, for a screen arrived at from somewhere else —
+   * "show me this attendant's shifts" is a link, not a thing to retype. Only
+   * the initial value: the box is the operator's from then on, and clearing it
+   * clears it.
+   */
+  initialSearch?: string;
+  /**
+   * Columns hidden on first render, as `{ columnId: false }`.
+   *
+   * For a field a table needs to *have* without needing to show: a facet can
+   * only filter on a declared column, and the search box only reads declared
+   * columns, so a value rendered inside another cell still has to exist as one
+   * of its own to be filterable. The column menu lists it, so hiding it here is
+   * a default rather than a decision taken away from the operator.
+   */
+  initialVisibility?: VisibilityState;
   facets?: FacetFilter[];
   /** Rendered to the right of the toolbar — page-level primary actions. */
   toolbarActions?: React.ReactNode;
@@ -164,6 +181,8 @@ export function DataTable<T extends object>({
   columns,
   searchKeys,
   searchPlaceholder = "Search…",
+  initialSearch = "",
+  initialVisibility,
   facets = [],
   toolbarActions,
   bulkActions,
@@ -182,9 +201,11 @@ export function DataTable<T extends object>({
 }: DataTableProps<T>) {
   const [sorting, setSorting] = React.useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([]);
-  const [columnVisibility, setColumnVisibility] = React.useState<VisibilityState>({});
+  const [columnVisibility, setColumnVisibility] = React.useState<VisibilityState>(
+    initialVisibility ?? {},
+  );
   const [rowSelection, setRowSelection] = React.useState<RowSelectionState>({});
-  const [globalFilter, setGlobalFilter] = React.useState("");
+  const [globalFilter, setGlobalFilter] = React.useState(initialSearch);
   const [density, setDensity] = React.useState<"comfortable" | "compact">("comfortable");
 
   const allColumns = React.useMemo<ColumnDef<T, unknown>[]>(() => {

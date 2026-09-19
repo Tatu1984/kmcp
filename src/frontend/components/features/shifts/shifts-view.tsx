@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   BadgeCheck,
@@ -56,6 +57,14 @@ import { formatDateTime, formatMoney, relativeTime } from "@/shared/utils/common
 import type { Shift } from "@/shared/types/domain.types";
 
 export function ShiftsView() {
+  /**
+   * The attendants screen sends people here when an action is refused because
+   * somebody still has a shift open — deactivating, transferring or removing
+   * them all are. The refusal says to close the shift; this is what makes that
+   * a single click rather than a hunt through every attendant on the kerb.
+   */
+  const attendantFilter = useSearchParams().get("attendant");
+
   const {
     items: shifts,
     isLoading,
@@ -118,6 +127,29 @@ export function ShiftsView() {
             </p>
           </div>
         ),
+      },
+      /**
+       * Declared, but hidden by default — both already appear under the
+       * attendant's name, so showing them again would only widen the table.
+       *
+       * They have to exist as columns all the same: the Vendor facet filters
+       * `vendorName`, and `searchKeys` searches `vendorName` and `zoneName`.
+       * Neither was a column, so the facet silently filtered nothing, typing a
+       * vendor or zone into the search box silently matched nothing, and the
+       * table logged "Column with id 'vendorName' does not exist" on every
+       * render. The column menu lists both, so they can still be turned on.
+       */
+      {
+        accessorKey: "vendorName",
+        header: "Vendor",
+        meta: "Vendor",
+        cell: ({ row }) => <span className="truncate text-sm">{row.original.vendorName}</span>,
+      },
+      {
+        accessorKey: "zoneName",
+        header: "Zone",
+        meta: "Zone",
+        cell: ({ row }) => <span className="truncate text-sm">{row.original.zoneName}</span>,
       },
       {
         accessorKey: "startAt",
@@ -329,6 +361,8 @@ export function ShiftsView() {
         enableSelection
         searchKeys={["attendantName", "vendorName", "zoneName"]}
         searchPlaceholder="Search attendant, vendor or zone…"
+        initialSearch={attendantFilter ?? ""}
+        initialVisibility={{ vendorName: false, zoneName: false }}
         facets={[
           {
             columnId: "status",

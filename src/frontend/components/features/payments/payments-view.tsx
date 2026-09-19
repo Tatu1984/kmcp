@@ -263,6 +263,15 @@ export function PaymentsView() {
           </div>
         ),
       },
+      // Declared so the Vendor facet has a column to filter on, hidden because
+      // the vendor already appears under the zone above. Without this the
+      // facet silently filtered nothing.
+      {
+        accessorKey: "vendorName",
+        header: "Vendor",
+        meta: "Vendor",
+        cell: ({ row }) => <span className="truncate text-sm">{row.original.vendorName}</span>,
+      },
       {
         accessorKey: "paidAt",
         header: "When",
@@ -459,6 +468,7 @@ export function PaymentsView() {
         columns={columns}
         enableSelection
         searchKeys={["id", "plateNumber", "gatewayPaymentId", "receiptNumber", "zoneName", "vendorName"]}
+        initialVisibility={{ vendorName: false }}
         searchPlaceholder="Search payment, plate, gateway ID or receipt…"
         facets={[
           {
