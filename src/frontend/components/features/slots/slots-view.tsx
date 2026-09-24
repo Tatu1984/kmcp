@@ -70,6 +70,60 @@ const TYPE_ICON: Partial<Record<SlotType, typeof Crown>> = {
   ACCESSIBLE: Accessibility,
 };
 
+/**
+ * What each colour on the bay map means, defined once.
+ *
+ * The tiles and the key underneath read the same entry, so a colour cannot
+ * come to mean one thing on the map and another in the legend — which is the
+ * quiet way a legend goes wrong, and the reason this is a table rather than
+ * the ternary chain the tiles used to carry inline.
+ *
+ * The wording is the server's behaviour, not a guess at it: `startOnce`
+ * refuses a bay that is RESERVED or OUT_OF_SERVICE with those exact reasons,
+ * so neither can be allocated to a driver however free it looks.
+ */
+const BAY_LEGEND: {
+  status: SlotStatus;
+  label: string;
+  meaning: string;
+  tile: string;
+  swatch: string;
+}[] = [
+  {
+    status: "AVAILABLE",
+    label: "Available",
+    meaning: "Free. An attendant can park a vehicle in it.",
+    tile: "border-emerald-500/35 bg-emerald-500/10 hover:bg-emerald-500/20",
+    swatch: "border-emerald-500/35 bg-emerald-500/20",
+  },
+  {
+    status: "OCCUPIED",
+    label: "Occupied",
+    meaning: "A vehicle is in it right now, with a session running.",
+    tile: "border-sky-500/40 bg-sky-500/10 hover:bg-sky-500/20",
+    swatch: "border-sky-500/40 bg-sky-500/20",
+  },
+  {
+    status: "RESERVED",
+    label: "Reserved",
+    meaning: "Held back for a permit holder. Refused to attendants.",
+    tile: "border-violet-500/40 bg-violet-500/10 hover:bg-violet-500/20",
+    swatch: "border-violet-500/40 bg-violet-500/20",
+  },
+  {
+    status: "OUT_OF_SERVICE",
+    label: "Out of service",
+    meaning: "Withdrawn — damaged, dug up or closed off. Refused to attendants.",
+    tile: "border-red-500/35 bg-red-500/10 hover:bg-red-500/20",
+    swatch: "border-red-500/35 bg-red-500/20",
+  },
+];
+
+const BAY_TONE = Object.fromEntries(BAY_LEGEND.map((e) => [e.status, e.tile])) as Record<
+  SlotStatus,
+  string
+>;
+
 export function SlotsView() {
   const params = useSearchParams();
   const zoneParam = params.get("zone");
@@ -420,14 +474,7 @@ export function SlotsView() {
           >
             <div className="grid grid-cols-4 gap-2 sm:grid-cols-8 lg:grid-cols-12">
               {data.slice(0, 120).map((slot) => {
-                const tone =
-                  slot.status === "OCCUPIED"
-                    ? "border-sky-500/40 bg-sky-500/10 hover:bg-sky-500/20"
-                    : slot.status === "RESERVED"
-                      ? "border-violet-500/40 bg-violet-500/10 hover:bg-violet-500/20"
-                      : slot.status === "OUT_OF_SERVICE"
-                        ? "border-red-500/35 bg-red-500/10 hover:bg-red-500/20"
-                        : "border-emerald-500/35 bg-emerald-500/10 hover:bg-emerald-500/20";
+                const tone = BAY_TONE[slot.status] ?? BAY_TONE.AVAILABLE;
                 const busy = busyIds.has(slot.id);
                 return (
                   <button
@@ -472,6 +519,19 @@ export function SlotsView() {
                 Showing the first 120 bays. Filter by zone or use the table view to see the rest.
               </p>
             )}
+
+            <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 border-t pt-3">
+              {BAY_LEGEND.map((entry) => (
+                <div key={entry.status} className="flex items-center gap-2">
+                  <span
+                    aria-hidden
+                    className={cn("size-3 shrink-0 rounded border", entry.swatch)}
+                  />
+                  <span className="text-xs font-medium">{entry.label}</span>
+                  <span className="text-xs text-muted-foreground">{entry.meaning}</span>
+                </div>
+              ))}
+            </div>
           </SectionCard>
         </TabsContent>
 
