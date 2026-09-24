@@ -14,6 +14,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  RefreshCw,
   ShieldBan,
   SquareStack,
   Trash2,
@@ -412,6 +413,22 @@ export function SlotsView() {
                 ))}
               </SelectContent>
             </Select>
+            {/*
+              The table view has a Refresh of its own inside the toolbar, but
+              the bay map had none — and the map is the half of this screen
+              somebody watches while attendants work, where a stale grid is a
+              bay that looks free and is not. Here it serves both tabs.
+            */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9"
+              disabled={isRefreshing}
+              onClick={handleRefresh}
+            >
+              <RefreshCw className={cn("size-4", isRefreshing && "animate-spin")} />
+              <span className="sr-only sm:not-sr-only">Refresh</span>
+            </Button>
             {/**
              * The board that joins these bays to the vehicles in them. Gated on
              * `session.read` rather than this page's `zone.read`: the board is
