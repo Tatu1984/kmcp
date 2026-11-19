@@ -6,7 +6,8 @@ function isOperatorPath(pathname: string): boolean {
   return pathname === "/vendor" || pathname.startsWith("/vendor/");
 }
 
-const PUBLIC_PATHS = ["/login", "/vendors/login", "/forgot-password", "/two-factor"];
+// `/privacy` is linked from the app store listings, where nobody is signed in.
+const PUBLIC_PATHS = ["/login", "/vendors/login", "/forgot-password", "/two-factor", "/privacy"];
 const PUBLIC_API = [
   "/api/v1/auth",
   "/api/v1/public",
