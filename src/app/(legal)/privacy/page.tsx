@@ -239,13 +239,25 @@ export default function PrivacyPolicyPage() {
 
       <Section id="delete-account" title="7. Deleting your account">
         <p>To delete your Smart Parking or SP Vendor account and the personal data linked to it:</p>
-        <ol className="list-decimal space-y-2 pl-6">
+        <ul className="list-disc space-y-2 pl-6">
           <li>
-            Email <Mail /> from the address on your account, with the subject{" "}
-            <em>&ldquo;Delete my account&rdquo;</em>. Attendants may also ask their supervisor.
+            <strong>In the Smart Parking app:</strong> open <em>Account</em> and tap{" "}
+            <em>Delete my account</em>. The account is deleted immediately.
           </li>
-          <li>We confirm the request is yours and delete the account within 30 days.</li>
-        </ol>
+          <li>
+            <strong>On the web, without the app:</strong> go to{" "}
+            <a className="text-primary underline underline-offset-4" href="/delete-account">
+              parking.infinititechpartners.com/delete-account
+            </a>
+            , confirm your email address with the code we send you, and the account is deleted
+            immediately.
+          </li>
+          <li>
+            <strong>By email:</strong> write to <Mail /> from the address on your account, with the
+            subject <em>&ldquo;Delete my account&rdquo;</em>. Attendants may also ask their
+            supervisor. We confirm the request is yours and delete the account within 30 days.
+          </li>
+        </ul>
         <p>
           We delete your email address, name, mobile number, vehicles and sign-in records. Parking
           sessions and payments are financial records that the law requires us to keep; we keep them
